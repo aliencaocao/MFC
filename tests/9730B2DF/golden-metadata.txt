@@ -1,52 +1,19 @@
-This file was created on 2025-09-21 23:13:54.182399.
+This file was created on 2026-09-06 17:04:52.581468.
 
 mfc.sh:
 
-    Invocation: test -o riemann_solver=5 --generate -j 8
-    Lock:       mpi=Yes & gpu=No & debug=No & gcov=No & unified=No & single=No & fastmath=No
-    Git:        0dba2f28e2808f21ce862a25ba35e8632ea975af on MPI_FFTW (dirty)
-
-simulation:
-
-    CMake Configuration:
-    
-        CMake v3.23.2 on Anands-MacBook-Pro.local
-    
-        C       : AppleClang v16.0.0.16000026 (/Library/Developer/CommandLineTools/usr/bin/cc)
-        Fortran : GNU v15.1.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : OFF
-        SIMULATION    : ON
-        POST_PROCESS  : OFF
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-    
-        Fypp    : /Users/anand/anandrdbz/MFC/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : Release
-    
-    Configuration Environment:
-    
-        CC       : /Library/Developer/CommandLineTools/usr/bin/cc
-        CXX      : /Library/Developer/CommandLineTools/usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
+    Invocation: test --no-gpu --no-fastmath -j 6 --generate --only 96AF00B3 27B24CD9 9730B2DF 4C812637 4AADC848 AD1A50B7 --no-examples
+    Lock:       mpi=Yes & gpu=No & debug=No & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
+    Git:        fd6866e234c9275a7883cf625f0d9d40da352652 on codex/pr1828 (dirty)
 
 pre_process:
 
     CMake Configuration:
     
-        CMake v3.23.2 on lawn-128-61-26-75.lawn.gatech.edu
+        CMake v3.25.2 on 4xh200-32c-64gb
     
-        C       : AppleClang v16.0.0.16000026 (/Library/Developer/CommandLineTools/usr/bin/cc)
-        Fortran : GNU v15.1.0 (/opt/homebrew/bin/gfortran)
+        C       : GNU v13.3.0 (/usr/bin/cc)
+        Fortran : NVHPC v26.5.0 (/home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran)
     
         PRE_PROCESS   : ON
         SIMULATION    : OFF
@@ -57,50 +24,18 @@ pre_process:
     
         MPI     : ON
         OpenACC : OFF
+        OpenMP  : OFF
     
-        Fypp    : /Users/anand/anandrdbz/MFC/build/venv/bin/fypp
+        Fypp    : /home/ycao018/MFC-sc26/build/venv/bin/fypp
         Doxygen : 
     
         Build Type : Release
     
     Configuration Environment:
     
-        CC       : 
-        CXX      : 
-        FC       : 
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
-
-post_process:
-
-    CMake Configuration:
-    
-        CMake v3.23.2 on lawn-128-61-26-75.lawn.gatech.edu
-    
-        C       : AppleClang v16.0.0.16000026 (/Library/Developer/CommandLineTools/usr/bin/cc)
-        Fortran : GNU v15.1.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : OFF
-        SIMULATION    : OFF
-        POST_PROCESS  : ON
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-    
-        Fypp    : /Users/anand/anandrdbz/MFC/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : Release
-    
-    Configuration Environment:
-    
-        CC       : 
-        CXX      : 
-        FC       : 
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran
         OMPI_CC  : 
         OMPI_CXX : 
         OMPI_FC  : 
@@ -109,10 +44,10 @@ syscheck:
 
     CMake Configuration:
     
-        CMake v3.23.2 on lawn-128-61-26-75.lawn.gatech.edu
+        CMake v3.25.2 on 4xh200-32c-64gb
     
-        C       : AppleClang v16.0.0.16000026 (/Library/Developer/CommandLineTools/usr/bin/cc)
-        Fortran : GNU v15.1.0 (/opt/homebrew/bin/gfortran)
+        C       : GNU v13.3.0 (/usr/bin/cc)
+        Fortran : NVHPC v26.5.0 (/home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran)
     
         PRE_PROCESS   : OFF
         SIMULATION    : OFF
@@ -123,17 +58,52 @@ syscheck:
     
         MPI     : ON
         OpenACC : OFF
+        OpenMP  : OFF
     
-        Fypp    : /Users/anand/anandrdbz/MFC/build/venv/bin/fypp
+        Fypp    : /home/ycao018/MFC-sc26/build/venv/bin/fypp
         Doxygen : 
     
         Build Type : Release
     
     Configuration Environment:
     
-        CC       : 
-        CXX      : 
-        FC       : 
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+simulation:
+
+    CMake Configuration:
+    
+        CMake v3.25.2 on 4xh200-32c-64gb
+    
+        C       : GNU v13.3.0 (/usr/bin/cc)
+        Fortran : NVHPC v26.5.0 (/home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : ON
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /home/ycao018/MFC-sc26/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Release
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /home/ycao018/software/nvhpc/Linux_x86_64/26.5/compilers/bin/nvfortran
         OMPI_CC  : 
         OMPI_CXX : 
         OMPI_FC  : 
@@ -141,10 +111,44 @@ syscheck:
 CPU:
 
     CPU Info:
-    From sysctl -a 
-    machdep.cpu.cores_per_package: 8
-    machdep.cpu.core_count: 8
-    machdep.cpu.logical_per_package: 8
-    machdep.cpu.thread_count: 8
-    machdep.cpu.brand_string: Apple M1
+    From lscpu
+    Architecture:                         x86_64
+    CPU op-mode(s):                       32-bit, 64-bit
+    Address sizes:                        46 bits physical, 57 bits virtual
+    Byte Order:                           Little Endian
+    CPU(s):                               32
+    On-line CPU(s) list:                  0-31
+    Vendor ID:                            GenuineIntel
+    Model name:                           Intel Xeon Processor (Cooperlake)
+    CPU family:                           6
+    Model:                                85
+    Thread(s) per core:                   1
+    Core(s) per socket:                   1
+    Socket(s):                            32
+    Stepping:                             10
+    BogoMIPS:                             4800.00
+    Flags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology cpuid tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 wbnoinvd arat vnmi avx512vbmi umip pku ospke waitpkg avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm md_clear arch_capabilities
+    Virtualization:                       VT-x
+    Hypervisor vendor:                    KVM
+    Virtualization type:                  full
+    L1d cache:                            1 MiB (32 instances)
+    L1i cache:                            1 MiB (32 instances)
+    L2 cache:                             128 MiB (32 instances)
+    L3 cache:                             512 MiB (32 instances)
+    NUMA node(s):                         1
+    NUMA node0 CPU(s):                    0-31
+    Vulnerability Gather data sampling:   Unknown: Dependent on hypervisor status
+    Vulnerability Itlb multihit:          Not affected
+    Vulnerability L1tf:                   Not affected
+    Vulnerability Mds:                    Not affected
+    Vulnerability Meltdown:               Not affected
+    Vulnerability Mmio stale data:        Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown
+    Vulnerability Reg file data sampling: Not affected
+    Vulnerability Retbleed:               Mitigation; Enhanced IBRS
+    Vulnerability Spec rstack overflow:   Not affected
+    Vulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl
+    Vulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+    Vulnerability Spectre v2:             Mitigation; Enhanced / Automatic IBRS; IBPB conditional; RSB filling; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop
+    Vulnerability Srbds:                  Not affected
+    Vulnerability Tsx async abort:        Not affected
 
