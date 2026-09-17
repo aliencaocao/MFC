@@ -22,7 +22,7 @@ module m_constants
     integer, parameter  :: dflt_int = -100          !< Default integer value
     integer, parameter  :: fourier_rings = 5        !< Fourier filter ring limit
     integer, parameter  :: num_fluids_max = 10      !< Maximum number of fluids in the simulation
-    integer, parameter  :: num_probes_max = 10      !< Maximum number of flow probes in the simulation
+    integer, parameter  :: num_probes_max = 64      !< Maximum number of flow probes in the simulation
     integer, parameter  :: num_patches_max = 10     !< Maximum number of IC patches
     integer, parameter  :: num_ib_airfoils_max = 5  !< Maximum number of ib_airfoil instances
     integer, parameter  :: num_stl_models_max = 10
@@ -118,6 +118,11 @@ module m_constants
     !! cannot be auto-generated, so these are hand-written.
     integer, parameter :: eos_stiffened_gas = 1
     integer, parameter :: eos_ideal_gas = 2
+    integer, parameter :: eos_mie_gruneisen = 3
+    integer, parameter :: eos_jwl = 4
+    integer, parameter :: eos_vinet = 5
+    integer, parameter :: eos_rk4_steps = 8  !< fixed-step RK4 along a phasic isentrope or a reference temperature
+    integer, parameter :: ode_isentrope = 1, ode_reference_temperature = 2  !< the two ODEs s_rk4 integrates
     integer, parameter :: num_synth_shells_max = 50  !< Max energy shells for synthetic turbulence
     integer, parameter :: num_turb_sources_max = 10  !< Max Gaussian forcing zones for synthetic turbulence
 

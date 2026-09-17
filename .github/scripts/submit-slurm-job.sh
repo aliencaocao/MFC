@@ -41,9 +41,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Detect job type from submitted script basename
 script_basename="$(basename "$script_path" .sh)"
 case "$script_basename" in
-    bench*)          job_type="bench" ;;
-    build-and-test*) job_type="buildtest" ;;
-    *)               job_type="test"  ;;
+    bench*)                 job_type="bench" ;;
+    build-and-test*)        job_type="buildtest" ;;
+    run_case_optimization*) job_type="caseopt" ;;
+    *)                      job_type="test"  ;;
 esac
 
 # --- Cluster configuration ---
@@ -126,14 +127,28 @@ elif [ "$device" = "gpu" ]; then
     # Determine GPU partition
     gpu_partition="batch"
     if [ "$gpu_partition_dynamic" = "true" ]; then
-        # Use pre-selected bench partition if available, otherwise query sinfo
-        if [ -n "${BENCH_GPU_PARTITION:-}" ]; then
-            gpu_partition="$BENCH_GPU_PARTITION"
-            echo "Using pre-selected bench partition: $gpu_partition (PR/master consistency)"
-        else
-            source "${SCRIPT_DIR}/select-gpu-partition.sh"
-            gpu_partition="$SELECTED_GPU_PARTITION"
-        fi
+        # Submit to a partition LIST and let SLURM start on whichever frees first,
+        # instead of pinning one partition and queueing behind it. Both tests and
+        # benchmarks run on a single node now: benchmarks build and bench BOTH the
+        # master and PR trees in one job on the same GPUs (see bench-pair.sh), so
+        # neither needs the old single-partition bench selector (which required two
+        # idle nodes in the SAME partition at once -- the main bench queue-starver).
+        # gpu-l40s (bad hardware) and gpu-rtx6000 (too slow for the time limit) are
+        # intentionally omitted.
+        gpu_partition="gpu-h200,gpu-h100,gpu-a100,gpu-v100"
+        echo "Using GPU partition list: $gpu_partition"
+    fi
+
+    # Case-optimization runs tiny single-GPU smoke cases (run_case_optimization.sh
+    # calls `mfc.sh run -n $ngpus` with ngpus falling back to 1), so it needs only
+    # ONE GPU. Requesting two forces SLURM onto a node with two *free* GPUs -- far
+    # harder to find under queue contention -- and case-opt jobs were sitting
+    # PENDING to the 8h GitHub timeout as a result. The test suite exercises
+    # multi-GPU MPI and keeps two.
+    if [ "$job_type" = "caseopt" ]; then
+        gpu_count=1
+    else
+        gpu_count=2
     fi
 
     case "$cluster" in
@@ -143,8 +158,8 @@ elif [ "$device" = "gpu" ]; then
             sbatch_device_opts="\
 #SBATCH -p $gpu_partition
 #SBATCH --ntasks-per-node=4
-#SBATCH -G2"
-            node_exclude="atl1-1-03-007-29-0,atl1-1-03-007-31-0"
+#SBATCH -G${gpu_count}"
+            node_exclude="atl1-1-03-007-29-0,atl1-1-03-007-31-0,atl1-1-01-002-28-0"
             ;;
         frontier|frontier_amd)
             sbatch_device_opts="\
@@ -295,9 +310,21 @@ while :; do
         exit 1
     fi
     if [ "$monitor_rc" -eq 77 ]; then
-        # The in-allocation preflight found this node unusable before any real
-        # work started. Exclude it and draw another node.
+        # The in-allocation preflight found this node unusable. Exclude it and draw
+        # another node. Note bench-pair.sh probes only after building both trees, so
+        # a fault there discards those builds and the resubmit repeats them.
         faulted_node=$(bash "$SCRIPT_DIR/node-exclude.sh" node-from "$output_file")
+        # Fall back to SLURM's own record when the MFC_FAULT_NODE marker is
+        # unreadable. A job that dies before its .out is flushed (or before NFS
+        # makes it visible) leaves no marker, so node-from returns empty; the
+        # merge below then adds nothing and SLURM re-draws the SAME bad node. A
+        # dead-GPU V100 (atl1-1-02-006-34-0, cuInit 999) ate both attempts of run
+        # 34183404644 exactly this way. sacct knows the node whether or not the
+        # .out exists, so identification no longer depends on the marker.
+        if [ -z "$faulted_node" ]; then
+            faulted_node=$(sacct -j "$job_id" -X -n -o NodeList 2>/dev/null | head -n1 | tr -d ' ')
+            case "$faulted_node" in ""|None*|*[,\[]*) faulted_node="" ;; esac
+        fi
         if [ "$node_attempt" -lt "$MFC_MAX_NODE_RESUBMITS" ]; then
             node_attempt=$((node_attempt + 1))
             node_exclude=$(bash "$SCRIPT_DIR/node-exclude.sh" merge "$node_exclude" "$faulted_node")
