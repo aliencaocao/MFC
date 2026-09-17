@@ -37,11 +37,11 @@ contains
         type(int_bounds_info), intent(in)                      :: ix, iy, iz
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(3)    :: alpha_rho_L, alpha_rho_R
-            real(wp), dimension(3)    :: vel_L, vel_R
-            real(wp), dimension(3)    :: alpha_L, alpha_R
-            real(wp), dimension(10)   :: Ys_L, Ys_R
-            real(wp), dimension(10)   :: Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR
+            real(wp), dimension(3) :: alpha_rho_L, alpha_rho_R
+            real(wp), dimension(3) :: vel_L, vel_R
+            real(wp), dimension(3) :: alpha_L, alpha_R
+            real(wp), dimension(${AMD_NUM_SPECIES_MAX}$) :: Ys_L, Ys_R
+            real(wp), dimension(${AMD_NUM_SPECIES_MAX}$) :: Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR
             real(wp), dimension(3, 3) :: vel_grad_L, vel_grad_R  !< Averaged velocity gradient tensor `d(vel_i)/d(coord_j)`.
         #:else
             real(wp), dimension(num_fluids)  :: alpha_rho_L, alpha_rho_R
@@ -94,8 +94,8 @@ contains
                                     & Re_L, Re_R, s_L, s_R, Ys_L, Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, pcorr, &
                                     & vel_grad_L, vel_grad_R, idx_right_phys, vel_L_rms, vel_R_rms, alpha_L_sum, alpha_R_sum, &
                                     & pres_L, pres_R, rho_L, rho_R, gamma_L, gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, c_L, c_R, &
-                                    & E_L, E_R, ptilde_L, ptilde_R, s_M, s_P, Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, R_gas_R, MW_L, &
-                                    & MW_R, T_L, T_R, Y_L, Y_R]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                    & Gamm_L, Gamm_R, E_L, E_R, ptilde_L, ptilde_R, s_M, s_P, Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, &
+                                    & R_gas_R, MW_L, MW_R, T_L, T_R, Y_L, Y_R]', firstprivate='[Re_size_loc1, Re_size_loc2]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -170,8 +170,8 @@ contains
                                 call get_mixture_molecular_weight(Ys_L, MW_L)
                                 call get_mixture_molecular_weight(Ys_R, MW_R)
 
-                                Xs_L(:) = Ys_L(:)*MW_L/molecular_weights(:)
-                                Xs_R(:) = Ys_R(:)*MW_R/molecular_weights(:)
+                                Xs_L(1:num_species) = Ys_L(1:num_species)*MW_L/molecular_weights(:)
+                                Xs_R(1:num_species) = Ys_R(1:num_species)*MW_R/molecular_weights(:)
 
                                 R_gas_L = gas_constant/MW_L
                                 R_gas_R = gas_constant/MW_R
@@ -183,11 +183,11 @@ contains
 
                                 if (chem_params%gamma_method == 1) then
                                     ! gamma_method = 1: Ref. Section 2.3.1 Formulation of doi:10.7907/ZKW8-ES97.
-                                    Gamma_iL = Cp_iL/(Cp_iL - 1.0_wp)
-                                    Gamma_iR = Cp_iR/(Cp_iR - 1.0_wp)
+                                    Gamma_iL(1:num_species) = Cp_iL(1:num_species)/(Cp_iL(1:num_species) - 1.0_wp)
+                                    Gamma_iR(1:num_species) = Cp_iR(1:num_species)/(Cp_iR(1:num_species) - 1.0_wp)
 
-                                    gamma_L = sum(Xs_L(:)/(Gamma_iL(:) - 1.0_wp))
-                                    gamma_R = sum(Xs_R(:)/(Gamma_iR(:) - 1.0_wp))
+                                    gamma_L = sum(Xs_L(1:num_species)/(Gamma_iL(1:num_species) - 1.0_wp))
+                                    gamma_R = sum(Xs_R(1:num_species)/(Gamma_iR(1:num_species) - 1.0_wp))
                                 else if (chem_params%gamma_method == 2) then
                                     ! gamma_method = 2: c_p / c_v where c_p, c_v are specific heats.
                                     call get_mixture_specific_heat_cp_mass(T_L, Ys_L, Cp_L)
@@ -211,9 +211,9 @@ contains
                                 call s_compute_energy(pres_R, alpha_rho_R, alpha_R, vel_R_rms, E_R)
                             end if
 
-                            call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L)
+                            call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L, alpha_rho_L)
 
-                            call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R)
+                            call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R, alpha_rho_R)
 
                             s_L = 0._wp; s_R = 0._wp
 

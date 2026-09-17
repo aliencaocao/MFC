@@ -175,6 +175,9 @@ Both human reviewers and AI code reviewers reference this section.
 
 - MFC uses **non-unity lower bounds** (e.g., `idwbuff(1)%%beg:idwbuff(1)%%end` with negative ghost-cell indices). Always verify loop bounds match array declarations.
 - **Riemann solver indexing:** Left states at `j`, right states at `j+1`. Off-by-one here corrupts fluxes.
+- **Grid extents:** `m`, `n`, `p` are cell counts in x, y, z (1D sets `n = p = 0`, 2D sets `p = 0`). The interior is `0:m`, the ghost region `-buff_size:m+buff_size`, and cell boundaries run `x_cb(-1-buff_size:m+buff_size)`. Bounds are carried in `idwint(1:3)` (interior) and `idwbuff(1:3)` (with ghosts).
+- **`buff_size` is not a single formula.** It is set per reconstruction scheme in `s_configure_coordinate_bounds` (`src/common/m_helper_basic.fpp`) and floored higher for Lagrange bubbles and immersed boundaries. Read that routine rather than assuming a value.
+- **Never hard-code an equation index.** They live in the `eqn_idx` struct (`eqn_idx_info` in `src/common/m_derived_types.fpp`, populated by `s_initialize_eqn_idx` in `src/common/m_global_parameters_common.fpp`): `%%cont`, `%%mom`, `%%E`, `%%adv`, plus the optional ranges `%%bub`, `%%stress`, `%%species`, and `%%B`. Index positions depend on `model_eqns` and on which features are enabled, so changing either moves every index.
 
 ### Precision and Type Safety
 
@@ -211,6 +214,14 @@ Both human reviewers and AI code reviewers reference this section.
 - Validation in `case_validator.py` must cover new interdependencies.
 - CLI schema in `toolchain/mfc/cli/commands.py` must match argument parsing.
 - Check subprocess calls for shell injection risks and missing error handling.
+
+### Parameter Plumbing
+
+- **Derived-type parameters are not auto-broadcast.** `generated_bcast.fpp` covers namelist *scalars* only. Each derived type (`chem_params`, `lag_params`, `rburn`) needs a hand-written `_emit_<name>` in `toolchain/mfc/params/generators/fortran_gen.py` plus its call site in that generator's simulation branch, and, if it is read on device, an explicit ``$:GPU_UPDATE(device='[name]')`` in both the target's `m_global_parameters.fpp` and `src/simulation/m_start_up.fpp` — `GPU_DECLARE` alone does not make it device-resident. Regrouping existing scalars into a derived type silently drops their broadcast, leaving every non-root rank holding the `dflt_real` sentinel. Single-rank golden files cannot catch this, so pair such a change with a `ppn=2` test and confirm it fails without the emitter.
+- **A `patch_ib` member that immersed-boundary ghost-point code reads must also be set in `s_add_cloud_particle`** (`src/simulation/m_particle_cloud.fpp`). `particle_cloud_ibs` is allocated without default initialization, and `s_reduce_ib_patch_array` copies the whole struct into `patch_ib`, overwriting the defaults assigned in `s_assign_default_values_to_user_inputs`. Anything left unset reaches the solver as uninitialized memory, and only where the allocation is not already zero-filled. A platform-only NaN is the signature of this class: a garbage `v_blow` once failed an AMD lane with `ICFL is NaN` while every NVIDIA lane and all local runs passed.
+- **Runtime checks go where they run.** Shared constraints belong in `src/common/m_checker_common.fpp`, simulation-only ones in `src/simulation/m_checker.fpp`, and pre- and post-process ones in their own `m_checker.fpp`. Those two `s_check_inputs` are currently empty; that is still the correct home for their checks, not `m_checker_common`.
+- **Analytic initial conditions are compiled into the binary** and their expressions are AST-validated at case load, so syntax errors and unknown variables surface immediately and by name. Each IC variable maps to an `eqn_idx` expression in `QPVF_IDX_VARS` (`toolchain/mfc/case.py`); adding a patch-settable conserved variable means updating that map and the Fortran `eqn_idx` builder together, because a mismatch is a silent wrong index.
+- **Under `--case-optimization` the baked-in constants are dropped from the namelist**, so changing one requires a rebuild rather than a case-file edit.
 
 ### Compiler Portability
 
@@ -464,8 +475,8 @@ means supplying these, not grepping for `gammas`:
 | `f_pressure` / `s_compute_energy` | \f$p(e)\f$ and \f$E(p)\f$ |
 | `f_bulk_modulus` | \f$K(p)\f$ - every sound speed in MFC is \f$K/\rho\f$, differing only in how phases are mixed |
 | `s_compute_speed_of_sound` / `_avg` | that mixing: Wood's law, 6-equation, bubble-diluted |
-| `f_phase_internal_energy` | per-phase internal energy (6-equation model) |
-| `f_isentrope_exponent` / `f_isentrope_pressure` / `f_pressure_on_isentrope` | the isentrope \f$p + B = \textrm{const}\,\rho^n\f$ |
+| `s_phase_internal_energy` | per-phase internal energy (6-equation model) |
+| `f_isentrope_exponent` / `f_isentrope_pressure` | the isentrope \f$p + B = \textrm{const}\,\rho^n\f$ |
 | `f_sg_thermal` | the thermal law \f$p + B = (n-1)c_v\rho T\f$ |
 
 The first six are *mechanical* - they need only \f$p, \rho, e, c\f$. The last two are *caloric* and

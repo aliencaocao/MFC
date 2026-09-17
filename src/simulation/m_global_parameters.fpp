@@ -121,7 +121,10 @@ module m_global_parameters
     $:GPU_DECLARE(create='[bc_x%vb1, bc_x%vb2, bc_x%vb3, bc_x%ve1, bc_x%ve2, bc_x%ve3]')
     $:GPU_DECLARE(create='[bc_y%vb1, bc_y%vb2, bc_y%vb3, bc_y%ve1, bc_y%ve2, bc_y%ve3]')
     $:GPU_DECLARE(create='[bc_z%vb1, bc_z%vb2, bc_z%vb3, bc_z%ve1, bc_z%ve2, bc_z%ve3]')
-    $:GPU_DECLARE(create='[ib_bc_x%beg, ib_bc_y%beg, ib_bc_z%beg]')
+    $:GPU_DECLARE(create='[bc_x%vel_in_ramp, bc_x%vel_in_t0, bc_x%vel_in_frac0]')
+    $:GPU_DECLARE(create='[bc_y%vel_in_ramp, bc_y%vel_in_t0, bc_y%vel_in_frac0]')
+    $:GPU_DECLARE(create='[bc_z%vel_in_ramp, bc_z%vel_in_t0, bc_z%vel_in_frac0]')
+    $:GPU_DECLARE(create='[ib_bc_x%beg, ib_bc_x%end, ib_bc_y%beg, ib_bc_y%end, ib_bc_z%beg, ib_bc_z%end]')
 #elif defined(MFC_OpenMP)
     $:GPU_DECLARE(create='[bc_x, bc_y, bc_z]')
     $:GPU_DECLARE(create='[ib_bc_x, ib_bc_y, ib_bc_z]')
@@ -356,6 +359,7 @@ contains
         dt = dflt_real
         cfl_dt = .false.
         cfl_target = dflt_real
+        ramp_ratio = dflt_real
 
         t_step_stop = dflt_int
         t_step_save = dflt_int
@@ -444,6 +448,27 @@ contains
         ! Fluids physical parameters (sim-specific; Re(:) and G=0._wp differ from post)
         do i = 1, num_fluids_max
             fluid_pp(i)%eos = eos_stiffened_gas
+            fluid_pp(i)%mg_rho0 = dflt_real
+            fluid_pp(i)%mg_c0 = dflt_real
+            fluid_pp(i)%mg_s = dflt_real
+            fluid_pp(i)%mg_gruneisen = dflt_real
+            fluid_pp(i)%mg_gruneisen_a = 0._wp
+            fluid_pp(i)%mg_t0 = 0._wp
+            fluid_pp(i)%mg_s2 = 0._wp
+            fluid_pp(i)%mg_s3 = 0._wp
+            fluid_pp(i)%jwl_a = dflt_real
+            fluid_pp(i)%jwl_b = dflt_real
+            fluid_pp(i)%jwl_r1 = dflt_real
+            fluid_pp(i)%jwl_r2 = dflt_real
+            fluid_pp(i)%jwl_omega = dflt_real
+            fluid_pp(i)%jwl_rho0 = dflt_real
+            fluid_pp(i)%jwl_t0 = 0._wp
+            fluid_pp(i)%vinet_k0 = dflt_real
+            fluid_pp(i)%vinet_k0p = dflt_real
+            fluid_pp(i)%vinet_rho0 = dflt_real
+            fluid_pp(i)%vinet_gruneisen = dflt_real
+            fluid_pp(i)%vinet_gruneisen_a = 0._wp
+            fluid_pp(i)%vinet_t0 = 0._wp
             fluid_pp(i)%gamma = dflt_real
             fluid_pp(i)%pi_inf = dflt_real
             fluid_pp(i)%cv = 0._wp
@@ -487,10 +512,13 @@ contains
         ! Immersed Boundaries (sim-specific extras)
         ib_neighborhood_radius = 0
         collision_model = 0
+        collision_temporal_resolution = 0
         coefficient_of_restitution = dflt_real
         collision_time = dflt_real
         ib_coefficient_of_friction = dflt_real
         ib_state_wrt = .false.
+        ib_force_wrt = .false.
+        ib_force_stride = 1
         many_ib_patch_parallelism = .false.
 
         ! Bubble modeling (sim-specific)
@@ -583,6 +611,9 @@ contains
             bc_${dir}$%grcbc_in = .false.
             bc_${dir}$%grcbc_out = .false.
             bc_${dir}$%grcbc_vel_out = .false.
+            bc_${dir}$%vel_in_ramp = 0._wp
+            bc_${dir}$%vel_in_t0 = 0._wp
+            bc_${dir}$%vel_in_frac0 = 0._wp
         #:endfor
 
         ! Lagrangian subgrid bubble model
@@ -670,6 +701,18 @@ contains
             patch_ib(i)%vel(:) = 0._wp
             patch_ib(i)%angles(:) = 0._wp
             patch_ib(i)%angular_vel(:) = 0._wp
+            patch_ib(i)%kin_model = 0
+            patch_ib(i)%kin_hinge(:) = 0._wp
+            patch_ib(i)%kin_offset(:) = 0._wp
+            patch_ib(i)%kin_phi0 = 0._wp
+            patch_ib(i)%kin_theta0 = 0._wp
+            patch_ib(i)%kin_theta_mean = 0._wp
+            patch_ib(i)%kin_freq = 0._wp
+            patch_ib(i)%kin_phase = 0._wp
+            patch_ib(i)%kin_t0 = 0._wp
+            patch_ib(i)%kin_ramp = 0._wp
+            patch_ib(i)%kin_pitch_rate = 0._wp
+            patch_ib(i)%kin_smooth = 0._wp
             patch_ib(i)%mass = dflt_real
             patch_ib(i)%moment = dflt_real
             patch_ib(i)%centroid_offset(:) = 0._wp

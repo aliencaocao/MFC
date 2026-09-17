@@ -60,7 +60,8 @@ contains
         real(wp) :: E_L, E_R
         real(wp) :: H_L, H_R
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(10) :: Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, R_species, h_iL, h_iR
+            real(wp), dimension(${AMD_NUM_SPECIES_MAX}$) :: Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, R_species, &
+                 & h_iL, h_iR
         #:else
             real(wp), dimension(num_species) :: Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, R_species, h_iL, h_iR
         #:endif
@@ -107,8 +108,10 @@ contains
         real(wp), dimension(6) :: tau_e_L, tau_e_R
         real(wp) :: G_L, G_R
         real(wp) :: damage_L, damage_R
+        real(wp) :: solid_partial_density_L, solid_partial_density_R
         real(wp) :: vel_L_rms, vel_R_rms, vel_avg_rms
         real(wp) :: rho_Star, E_Star, p_Star, p_K_Star, vel_K_star
+        real(wp) :: alpha_K_star, alpha_rho_K_star, p_isen_L, p_isen_R, e_K_star
         real(wp) :: pres_SL, pres_SR, Ms_L, Ms_R
         real(wp) :: pcorr                      !< low Mach number correction
         integer :: i, j, k, l, q               !< Generic loop iterators
@@ -116,8 +119,8 @@ contains
 
         ! HLLC star-state helpers
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(20) :: U_L, U_R
-            real(wp), dimension(20) :: F_L, F_R, F_star_L, F_star_R, F_HLLC
+            real(wp), dimension(${AMD_SYS_SIZE_MAX}$) :: U_L, U_R
+            real(wp), dimension(${AMD_SYS_SIZE_MAX}$) :: F_L, F_R, F_star_L, F_star_R, F_HLLC
         #:else
             real(wp), dimension(sys_size) :: U_L, U_R
             real(wp), dimension(sys_size) :: F_L, F_R, F_star_L, F_star_R, F_HLLC
@@ -138,7 +141,7 @@ contains
 
         ! ADC (HLL -> HLLC)
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(20) :: F_HLL
+            real(wp), dimension(${AMD_SYS_SIZE_MAX}$) :: F_HLL
         #:else
             real(wp), dimension(sys_size) :: F_HLL
         #:endif
@@ -182,7 +185,8 @@ contains
                                         & c_avg, gamma_avg, ptilde_L, ptilde_R, vel_L_rms, vel_R_rms, vel_avg_rms, Ms_L, Ms_R, &
                                         & pres_SL, pres_SR, alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, &
                                         & vel_K_star, s_L, s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, &
-                                        & xi_PP]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                        & xi_PP, alpha_K_star, alpha_rho_K_star, p_isen_L, p_isen_R, e_K_star]', &
+                                        & firstprivate='[Re_size_loc1, Re_size_loc2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -276,15 +280,15 @@ contains
                                                                  & qv_R, rho_avg, vel_avg_rms, H_avg, gamma_avg, qv_avg)
                                 end if
 
-                                call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L)
+                                call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L, alpha_rho_L)
 
-                                call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R)
+                                call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R, alpha_rho_R)
 
                                 ! Only the pressure-based wave-speed estimate reads the averaged state, and building it
                                 ! costs eight square roots per face under the Roe average.
                                 if (wave_speeds == wave_speeds_pressure) then
                                     call s_compute_speed_of_sound_avg(pres_R, rho_avg, gamma_avg, pi_inf_R, qv_avg, vel_avg_rms, &
-                                                                      & H_avg, c_sum_Yi_Phi, alpha_R, c_avg)
+                                                                      & H_avg, c_sum_Yi_Phi, alpha_R, c_avg, alpha_rho_R)
                                 end if
 
                                 if (viscous) then
@@ -401,20 +405,29 @@ contains
                                 ! energy flux
                                 $:GPU_LOOP(parallelism='[seq]')
                                 do i = 1, num_fluids
-                                    ! Stiffened-gas isentrope p* = (p + B) xi**n - B, with the Tait exponent and pressure
-                                    ! already precomputed as isentrope_n = 1/gamma + 1 and isentrope_B = pi_inf/(1 + gamma).
-                                    p_K_Star = xi_M*(xi_MP*(f_pressure_on_isentrope(pres_L, xi_L, isentrope_n(i), &
-                                                     & isentrope_B(i)) - pres_L) + pres_L) &
-                                                     & + xi_P*(xi_PP*(f_pressure_on_isentrope(pres_R, xi_R, isentrope_n(i), &
-                                                     & isentrope_B(i)) - pres_R) + pres_R)
+                                    ! Phasic isentrope p* from the upwind state: closed form for stiffened gas, integrated
+                                    ! for a state-dependent EOS.
+                                    call s_phase_pressure_on_isentrope(pres_L, alpha_rho_L(i)/max(alpha_L(i), sgm_eps), xi_L, i, &
+                                                                       & p_isen_L)
+                                    call s_phase_pressure_on_isentrope(pres_R, alpha_rho_R(i)/max(alpha_R(i), sgm_eps), xi_R, i, &
+                                                                       & p_isen_R)
+                                    p_K_Star = xi_M*(xi_MP*(p_isen_L - pres_L) + pres_L) + xi_P*(xi_PP*(p_isen_R - pres_R) + pres_R)
 
-                                    flux_rsx_vf(${SF('')}$, i + eqn_idx%int_en%beg - 1) = f_phase_internal_energy(p_K_Star, &
-                                                & xi_M*qL_prim_rsx_vf(${SF('')}$, &
-                                                & i + eqn_idx%adv%beg - 1) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
-                                                & i + eqn_idx%adv%beg - 1), xi_M*qL_prim_rsx_vf(${SF('')}$, &
-                                                & i + eqn_idx%cont%beg - 1) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
-                                                & i + eqn_idx%cont%beg - 1), gammas(i), pi_infs(i), &
-                                                & qvs(i))*vel_K_Star + (s_M/s_L)*(s_P/s_R) &
+                                    alpha_K_star = xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                                       & i + eqn_idx%adv%beg - 1) &
+                                                                       & + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
+                                                                       & i + eqn_idx%adv%beg - 1)
+                                    alpha_rho_K_star = xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                                           & i + eqn_idx%cont%beg - 1) &
+                                                                           & + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
+                                                                           & i + eqn_idx%cont%beg - 1)
+                                    ! Star partial density xi_K alpha_rho, blended like p_K_Star: a state-dependent EOS reads
+                                    ! its coefficients at the star density, not the upwind one.
+                                    call s_phase_internal_energy(p_K_Star, alpha_K_star, &
+                                                                 & alpha_rho_K_star*(1._wp + xi_M*xi_MP*(xi_L - 1._wp) &
+                                                                 & + xi_P*xi_PP*(xi_R - 1._wp)), i, e_K_star)
+                                    flux_rsx_vf(${SF('')}$, &
+                                                & i + eqn_idx%int_en%beg - 1) = e_K_star*vel_K_Star + (s_M/s_L)*(s_P/s_R) &
                                                 & *pcorr*s_S*(xi_M*qL_prim_rsx_vf(${SF('')}$, &
                                                 & i + eqn_idx%adv%beg - 1) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
                                                 & i + eqn_idx%adv%beg - 1))
@@ -630,9 +643,9 @@ contains
                                     end do
                                 end if
 
-                                call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L)
+                                call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L, alpha_rho_L)
 
-                                call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R)
+                                call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R, alpha_rho_R)
 
                                 ! Only the pressure-based wave-speed estimate reads the averaged state, and building it
                                 ! costs eight square roots per face under the Roe average.
@@ -640,7 +653,7 @@ contains
                                     ! Zero, not c_sum_Yi_Phi: this loop never forms the chemistry average, and
                                     ! chemistry with bubbles_euler/qbmm is prohibited, so the branch is unreachable.
                                     call s_compute_speed_of_sound_avg(pres_R, rho_avg, gamma_avg, pi_inf_R, qv_avg, vel_avg_rms, &
-                                                                      & H_avg, 0._wp, alpha_R, c_avg)
+                                                                      & H_avg, 0._wp, alpha_R, c_avg, alpha_rho_R)
                                 end if
 
                                 if (viscous) then
@@ -839,17 +852,42 @@ contains
                         ! statement and private variable from the pure-fluid emission, keeping its body and directive
                         ! identical to the single kernel a build without hypoelasticity would compile. Sharing one kernel
                         ! pinned it at the GPU register ceiling for every HLLC user.
+                        ! One source of truth for this kernel's private variables: both emissions of the shared body take
+                        ! _hllc_s*, and only the hypoelastic one adds _hllc_e*. Two hand-written lists drifted apart once --
+                        ! c_sum_Yi_Phi was private in one and shared in the other, which races under OpenMP offload.
+                        ! Names are lists joined once, so no fragment carries a trailing separator to get wrong.
+                        #:set _hllc_s1 = ['i', 'j', 'k', 'l', 'q', 'T_L', 'T_R', 'vel_L_rms', 'vel_R_rms', 'pres_L', 'pres_R', &
+                            & 'rho_L', 'gamma_L', 'pi_inf_L', 'qv_L', 'rho_R', 'gamma_R']
+                        #:set _hllc_s2 = ['pi_inf_R', 'qv_R', 'alpha_L_sum', 'alpha_R_sum', 'E_L', 'E_R', 'MW_L', 'MW_R', &
+                            & 'R_gas_L', 'R_gas_R', 'Cp_L', 'Cp_R', 'Cv_L', 'Cv_R', 'c_sum_Yi_Phi']
+                        #:set _hllc_s3 = ['Gamm_L', 'Gamm_R', 'Y_L', 'Y_R', 'H_L', 'H_R', 'qv_avg', 'rho_avg', 'gamma_avg', &
+                            & 'H_avg', 'c_L', 'c_R', 'c_avg', 's_P', 's_M', 'xi_P', 'xi_M', 'xi_L']
+                        #:set _hllc_s4 = ['xi_R', 'xi_L_m1', 'xi_R_m1', 'Ms_L', 'Ms_R', 'pres_SL', 'pres_SR', 'vel_L', 'vel_R', &
+                            & 'Re_L', 'Re_R', 'alpha_L', 'alpha_R', 'alpha_rho_L', 'alpha_rho_R']
+                        #:set _hllc_s5 = ['alpha_lim_L', 'alpha_lim_R', 's_L', 's_R', 's_S', 'vel_avg_rms', 'pcorr', 'Ys_L', &
+                            & 'Ys_R', 'Xs_L', 'Xs_R', 'Gamma_iL', 'Gamma_iR', 'Cp_iL', 'Cp_iR']
+                        #:set _hllc_s6 = ['R_species', 'h_iL', 'h_iR']
+                        #:set _hllc_e1 = ['ptilde_L', 'ptilde_R', 'tau_e_L', 'tau_e_R', 'G_L', 'G_R', 'damage_L', 'damage_R', &
+                            & 'solid_partial_density_L', 'solid_partial_density_R', &
+                            & 'U_L', 'U_R', 'F_L', 'F_R', 'F_star_L', 'F_star_R', 'F_HLLC']
+                        #:set _hllc_e2 = ['u_n_HLLC', 'u_t_HLLC', 'u_t2_HLLC', 'pres_tot_L', 'pres_tot_R', 'u_n_L', 'u_n_R', &
+                            & 'u_t_L', 'u_t_R', 'u_t2_L', 'u_t2_R', 'tau_nn_L', 'tau_nn_R']
+                        #:set _hllc_e3 = ['tau_nt_L', 'tau_nt_R', 'tau_tt_L', 'tau_tt_R', 'tau_nt2_L', 'tau_nt2_R', 'tau_t2t2_L', &
+                            & 'tau_t2t2_R', 'tau_t1t2_L', 'tau_t1t2_R', 'tau_qq_L', 'tau_qq_R']
+                        #:set _hllc_e4 = ['p_face', 'tau_qq_face', 'A_L', 'A_R', 'denom_A', 'u_t_star', 'tau_nt_star', &
+                            & 'u_t2_star', 'tau_nt2_star', 'pres_tot_star', 'F_HLL', 'u_n_HLL_trace']
+                        #:set _hllc_e5 = ['u_t_HLL_trace', 'u_t2_HLL_trace', 'p_face_HLL', 'tau_qq_face_HLL', 'tau_nn_HLL', &
+                            & 'phi', 'Sigma_L', 'Sigma_R', 'dSigma', 'Sigma_ref', 'a_L_ref']
+                        #:set _hllc_e6 = ['a_R_ref', 'a_ref', 'du_t', 'dtau_nt', 'du_t2', 'dtau_nt2', 'sensor_ptot', 'sensor_vt', &
+                            & 'sensor_tnt', 'sensor_combined', 'idx_phys']
                         #:if HYPO
-                            ! Private list split across _hllc_p1/p2/p3 for Fypp line-length limits
-                            #:set _hllc_p1 = '[i, j, k, l, q, T_L, T_R, vel_L_rms, vel_R_rms, pres_L, pres_R, rho_L, gamma_L, pi_inf_L, qv_L, rho_R, gamma_R, pi_inf_R, qv_R, alpha_L_sum, alpha_R_sum, E_L, E_R, MW_L, MW_R, R_gas_L, R_gas_R, Cp_L, Cp_R, Cv_L, Cv_R, c_sum_Yi_Phi, Gamm_L, Gamm_R, Y_L, Y_R, H_L, H_R, qv_avg, rho_avg, gamma_avg, H_avg, c_L, c_R, c_avg, s_P, s_M, xi_P, xi_M, xi_L, xi_R, xi_L_m1, xi_R_m1, Ms_L, Ms_R, pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, alpha_L, alpha_R, alpha_rho_L, alpha_rho_R, alpha_lim_L, alpha_lim_R, s_L, s_R, s_S, vel_avg_rms, pcorr, ptilde_L, ptilde_R, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, R_species, h_iL, h_iR, tau_e_L, tau_e_R, G_L, G_R, damage_L, damage_R,'
-                            #:set _hllc_p2 = 'U_L, U_R, F_L, F_R, F_star_L, F_star_R, F_HLLC, u_n_HLLC, u_t_HLLC, u_t2_HLLC, pres_tot_L, pres_tot_R, u_n_L, u_n_R, u_t_L, u_t_R, u_t2_L, u_t2_R, tau_nn_L, tau_nn_R, tau_nt_L, tau_nt_R, tau_tt_L, tau_tt_R, tau_nt2_L, tau_nt2_R, tau_t2t2_L, tau_t2t2_R, tau_t1t2_L, tau_t1t2_R, tau_qq_L, tau_qq_R, p_face, tau_qq_face, A_L, A_R, denom_A, u_t_star, tau_nt_star, u_t2_star, tau_nt2_star, pres_tot_star,'
-                            #:set _hllc_p3 = 'F_HLL, u_n_HLL_trace, u_t_HLL_trace, u_t2_HLL_trace, p_face_HLL, tau_qq_face_HLL, tau_nn_HLL, phi, Sigma_L, Sigma_R, dSigma, Sigma_ref, a_L_ref, a_R_ref, a_ref, du_t, dtau_nt, du_t2, dtau_nt2, sensor_ptot, sensor_vt, sensor_tnt, sensor_combined, idx_phys]'
-                            #:set _hllc_priv = _hllc_p1 + _hllc_p2 + _hllc_p3
+                            #:set _hllc_priv = '[' + ', '.join(_hllc_s1 + _hllc_s2 + _hllc_s3 + _hllc_s4 + _hllc_s5 + _hllc_s6 &
+                                                               & + _hllc_e1 + _hllc_e2 + _hllc_e3 + _hllc_e4 + _hllc_e5 &
+                                                               & + _hllc_e6) + ']'
                         #:else
-                            ! Master's pure-fluid private list, unchanged
-                            #:set _hllc_priv = '[i, T_L, T_R, vel_L_rms, vel_R_rms, pres_L, pres_R, rho_L, gamma_L, pi_inf_L, qv_L, rho_R, gamma_R, pi_inf_R, qv_R, alpha_L_sum, alpha_R_sum, E_L, E_R, MW_L, MW_R, R_gas_L, R_gas_R, Cp_L, Cp_R, Cv_L, Cv_R, Gamm_L, Gamm_R, Y_L, Y_R, H_L, H_R, qv_avg, rho_avg, gamma_avg, H_avg, c_L, c_R, c_avg, s_P, s_M, xi_P, xi_M, xi_L, xi_R, xi_L_m1, xi_R_m1, Ms_L, Ms_R, pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, alpha_L, alpha_R, alpha_rho_L, alpha_rho_R, alpha_lim_L, alpha_lim_R, s_L, s_R, s_S, vel_avg_rms, pcorr, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, R_species, h_iL, h_iR]'
+                            #:set _hllc_priv = '[' + ', '.join(_hllc_s1 + _hllc_s2 + _hllc_s3 + _hllc_s4 + _hllc_s5 + _hllc_s6) &
+                                                               & + ']'
                         #:endif
-                        ! The two calls below are identical on purpose. An offload kernel is named
                         ! after the .fpp line of its GPU_PARALLEL_LOOP, so one shared call would give
                         ! both emissions the same name; amdflang then launches the wrong one and a
                         ! hypoelastic run faults inside the pure-fluid kernel. Two call sites are what
@@ -972,8 +1010,8 @@ contains
                                         call get_mixture_molecular_weight(Ys_L, MW_L)
                                         call get_mixture_molecular_weight(Ys_R, MW_R)
 
-                                        Xs_L(:) = Ys_L(:)*MW_L/molecular_weights(:)
-                                        Xs_R(:) = Ys_R(:)*MW_R/molecular_weights(:)
+                                        Xs_L(1:num_species) = Ys_L(1:num_species)*MW_L/molecular_weights(:)
+                                        Xs_R(1:num_species) = Ys_R(1:num_species)*MW_R/molecular_weights(:)
 
                                         R_gas_L = gas_constant/MW_L
                                         R_gas_R = gas_constant/MW_R
@@ -986,11 +1024,11 @@ contains
 
                                         if (chem_params%gamma_method == 1) then
                                             !> gamma_method = 1: Ref. Section 2.3.1 Formulation of doi:10.7907/ZKW8-ES97.
-                                            Gamma_iL = Cp_iL/(Cp_iL - 1.0_wp)
-                                            Gamma_iR = Cp_iR/(Cp_iR - 1.0_wp)
+                                            Gamma_iL(1:num_species) = Cp_iL(1:num_species)/(Cp_iL(1:num_species) - 1.0_wp)
+                                            Gamma_iR(1:num_species) = Cp_iR(1:num_species)/(Cp_iR(1:num_species) - 1.0_wp)
 
-                                            gamma_L = sum(Xs_L(:)/(Gamma_iL(:) - 1.0_wp))
-                                            gamma_R = sum(Xs_R(:)/(Gamma_iR(:) - 1.0_wp))
+                                            gamma_L = sum(Xs_L(1:num_species)/(Gamma_iL(1:num_species) - 1.0_wp))
+                                            gamma_R = sum(Xs_R(1:num_species)/(Gamma_iR(1:num_species) - 1.0_wp))
                                         else if (chem_params%gamma_method == 2) then
                                             !> gamma_method = 2: c_p / c_v where c_p, c_v are specific heats.
                                             call get_mixture_specific_heat_cp_mass(T_L, Ys_L, Cp_L)
@@ -1047,26 +1085,27 @@ contains
                                         call s_compute_average_state(rho_L, rho_R, vel_L, vel_R, H_L, H_R, gamma_L, gamma_R, &
                                                                      & qv_L, qv_R, rho_avg, vel_avg_rms, H_avg, gamma_avg, qv_avg)
                                         if (chemistry .and. avg_state == avg_state_roe) then
-                                            R_species = gas_constant/molecular_weights
+                                            R_species(1:num_species) = gas_constant/molecular_weights
                                             call get_species_enthalpies_rt(T_L, h_iL)
                                             call get_species_enthalpies_rt(T_R, h_iR)
-                                            h_iL = h_iL*R_species*T_L
-                                            h_iR = h_iR*R_species*T_R
+                                            h_iL(1:num_species) = h_iL(1:num_species)*R_species(1:num_species)*T_L
+                                            h_iR(1:num_species) = h_iR(1:num_species)*R_species(1:num_species)*T_R
                                             call s_compute_chemistry_average_state(rho_L, rho_R, T_L, T_R, Ys_L, Ys_R, R_species, &
                                                                                    & h_iL, h_iR, Cp_iL, Cp_iR, vel_avg_rms, &
                                                                                    & gamma_avg, c_sum_Yi_Phi)
                                         end if
                                     end if
 
-                                    call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L)
+                                    call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, alpha_L, c_L, alpha_rho_L)
 
-                                    call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R)
+                                    call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, alpha_R, c_R, alpha_rho_R)
 
                                     ! Only the pressure-based wave-speed estimate reads the averaged state, and building it
                                     ! costs eight square roots per face under the Roe average.
                                     if (wave_speeds == wave_speeds_pressure) then
                                         call s_compute_speed_of_sound_avg(pres_R, rho_avg, gamma_avg, pi_inf_R, qv_avg, &
-                                                                          & vel_avg_rms, H_avg, c_sum_Yi_Phi, alpha_R, c_avg)
+                                                                          & vel_avg_rms, H_avg, c_sum_Yi_Phi, alpha_R, c_avg, &
+                                                                          & alpha_rho_R)
                                     end if
 
                                     if (viscous) then
@@ -1273,6 +1312,23 @@ contains
                                             flux_rsx_vf(${SF('')}$, &
                                                         & eqn_idx%stress%end) = xi_M*rho_L*tau_qq_L*(vel_L(dir_idx(1)) &
                                                         & + s_M*(xi_L - 1._wp)) + xi_P*rho_R*tau_qq_R*(vel_R(dir_idx(1)) &
+                                                        & + s_P*(xi_R - 1._wp))
+                                        end if
+
+                                        ! Damage flux: U_D = m_s*D (damageable-solid partial mass)
+                                        if (cont_damage) then
+                                            solid_partial_density_L = 0._wp; solid_partial_density_R = 0._wp
+                                            $:GPU_LOOP(parallelism='[seq]')
+                                            do i = 1, num_fluids
+                                                if (Gs_rs(i) > verysmall) then
+                                                    solid_partial_density_L = solid_partial_density_L + alpha_rho_L(i)
+                                                    solid_partial_density_R = solid_partial_density_R + alpha_rho_R(i)
+                                                end if
+                                            end do
+                                            flux_rsx_vf(${SF('')}$, &
+                                                        & eqn_idx%damage) &
+                                                        & = xi_M*solid_partial_density_L*damage_L*(vel_L(dir_idx(1)) + s_M*(xi_L &
+                                                        & - 1._wp)) + xi_P*solid_partial_density_R*damage_R*(vel_R(dir_idx(1)) &
                                                         & + s_P*(xi_R - 1._wp))
                                         end if
 
