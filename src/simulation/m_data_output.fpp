@@ -24,13 +24,10 @@ module m_data_output
     implicit none
 
     private
-    public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_com_files, s_open_probe_files, &
+    public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_probe_files, &
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
-        & s_write_ib_data_file, s_write_com_files, s_write_probe_files, s_write_ib_state_file, s_close_run_time_information_file, &
-        & s_close_com_files, s_close_probe_files, s_finalize_data_output_module
-
-    real(wp), public, allocatable, dimension(:,:) :: c_mass
-    $:GPU_DECLARE(create='[c_mass]')
+        & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_force_history, s_close_ib_force_history, &
+        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module
 
     !> @name ICFL, VCFL, CCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -41,6 +38,18 @@ module m_data_output
     !> @}
 
     type(scalar_field), allocatable, dimension(:) :: q_cons_temp_ds
+
+    !> One fixed-width text record per immersed body per recorded step, in D/ib_forces.dat.
+    !!
+    !! IB_REC_FMT is fixed width by construction: every ES descriptor right-justifies in its field,
+    !! including for negatives, three-digit exponents, NaN and Inf, so a record is always
+    !! IB_REC_BODY characters. That is what lets a rank compute a byte offset for (step, body) and
+    !! write there directly, giving one shared text file with no gather and no per-rank shards.
+    !! The two must be edited together: widening the format without IB_REC_LEN shears the file.
+    character(len=*), parameter :: IB_REC_FMT = '(I10,19(1X,ES17.9E3))'
+    integer, parameter          :: IB_REC_BODY = 10 + 19*18      !< characters the format emits
+    integer, parameter          :: IB_REC_LEN = IB_REC_BODY + 1  !< plus the newline
+    integer                     :: ib_hist_file = -1             !< held open for the run; -1 until first write
 
 contains
 
@@ -107,31 +116,6 @@ contains
         write (3, *)  ! new line
 
     end subroutine s_open_run_time_information_file
-
-    !> Open center-of-mass data files for writing
-    impure subroutine s_open_com_files()
-
-        character(len=path_len + 3*name_len) :: file_path  !< Relative path to the CoM file in the case directory
-        integer                              :: i          !< Generic loop iterator
-
-        do i = 1, num_fluids
-            write (file_path, '(A,I0,A)') '/fluid', i, '_com.dat'
-            file_path = trim(case_dir) // trim(file_path)
-            open (i + 120, file=trim(file_path), form='formatted', position='append', status='unknown')
-            if (n == 0) then
-                write (i + 120, '(A)') '    Non-Dimensional Time ' // '    Total Mass ' // '    x-loc ' // '    Total Volume    '
-            else if (p == 0) then
-                write (i + 120, &
-                       & '(A)') '    Non-Dimensional Time ' // '    Total Mass ' // '    x-loc ' // '    y-loc ' &
-                       & // '    Total Volume    '
-            else
-                write (i + 120, &
-                       & '(A)') '    Non-Dimensional Time ' // '    Total Mass ' // '    x-loc ' // '    y-loc ' // '    z-loc ' &
-                       & // '    Total Volume    '
-            end if
-        end do
-
-    end subroutine s_open_com_files
 
     !> Open flow probe data files for writing
     impure subroutine s_open_probe_files
@@ -897,6 +881,7 @@ contains
         integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
         integer                              :: ifile, ierr, data_size
         integer, dimension(MPI_STATUS_SIZE)  :: status
+        character(len=10)                    :: t_step_string
 
         $:GPU_UPDATE(host='[ib_markers%sf]')
 
@@ -907,21 +892,39 @@ contains
         WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
         MOK = int(1._wp, MPI_OFFSET_KIND)
 
-        write (file_loc, '(A)') 'ib.dat'
-        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        if (file_per_process) then
+            call s_int_to_str(time_step, t_step_string)
 
-        call s_mpi_barrier()
-        call s_delay_file_access(proc_rank)
+            if (proc_rank == 0) then
+                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string)
+                call s_create_directory(trim(file_loc))
+            end if
+            call s_mpi_barrier()
+            call s_delay_file_access(proc_rank)
 
-        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+            write (file_loc, '(A,I0,A,i7.7,A)') 'ib_markers_', time_step, '_', proc_rank, '.dat'
+            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // '/' // trim(file_loc)
 
-        var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
-        disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(time_step/t_step_save))
-        if (time_step == 0) disp = 0
+            call MPI_FILE_OPEN(MPI_COMM_SELF, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+            call MPI_FILE_CLOSE(ifile, ierr)
+        else
+            write (file_loc, '(A)') 'ib.dat'
+            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
 
-        call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
-        call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
-        call MPI_FILE_CLOSE(ifile, ierr)
+            call s_mpi_barrier()
+            call s_delay_file_access(proc_rank)
+
+            call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+
+            var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(time_step/t_step_save))
+            if (time_step == 0) disp = 0
+
+            call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+            call MPI_FILE_CLOSE(ifile, ierr)
+        end if
 #endif
 
     end subroutine s_write_parallel_ib_data
@@ -1081,6 +1084,149 @@ contains
 
     end subroutine s_write_serial_ib_state
 
+    !> Record every immersed body's force, torque and kinematics for this step.
+    !!
+    !! One shared text file, D/ib_forces.dat, opened once for the run. Each rank writes only the
+    !! bodies it owns, at a byte offset computed from the step and the global body id, so the file
+    !! is byte-identical however the domain is decomposed and needs no merge step. Writing a file
+    !! per body instead costs an inquire, open and close per body per rank per step, which is
+    !! 3e5 filesystem metadata operations per step at 1000 ranks holding 100 bodies each.
+    !!
+    !! Layout: row r holds all num_gbl_ibs bodies in global id order, so body g occupies bytes
+    !! ((r*num_gbl_ibs) + g - 1)*IB_REC_LEN. The file carries no header line, which would shift
+    !! every offset after it; the columns are listed in docs/documentation/case.md.
+    !!
+    !! Rows are numbered from the first step this run records, not from t_step, so that row 0 is
+    !! always written. Nothing pre-fills the file -- both open paths create it empty and every
+    !! write lands at a computed offset -- so a row no rank ever writes stays a hole, and a hole
+    !! reads back as NUL bytes rather than blanks. Counting from t_step would leave exactly such a
+    !! hole wherever the run starts: the skip below means step t_step_start is never written, and
+    !! on a restart every row beneath it would be missing as well.
+    impure subroutine s_write_ib_force_history(t_step)
+
+        integer, intent(in)                  :: t_step
+        character(LEN=IB_REC_LEN)            :: rec
+        character(LEN=path_len + 2*name_len) :: file_loc
+        real(wp)                             :: fields(19)
+        integer                              :: i, ib_idx, n_write, row
+
+#ifdef MFC_MPI
+        integer(kind=MPI_OFFSET_KIND) :: disp
+        integer                       :: ierr, status(MPI_STATUS_SIZE)
+#endif
+
+        if (.not. ib_force_wrt) return
+        if (mod(t_step, max(ib_force_stride, 1)) /= 0) return
+        ! This runs at RK stage 1, before the step's force has been computed, so the row for step N carries the
+        ! force from the end of step N-1. The first step of a run has no N-1: patch_ib%force is still zero and
+        ! the row would record identically zero force. That is not a measurement, and on a run chained across a
+        ! queue's walltime limit it lands once per restart -- in a six-wingbeat case, zeros at steps 20649,
+        ! 34649 and 48649 sitting among neighbours of -0.134, +0.474 and -0.475, corrupting every per-beat
+        ! trough taken over the joined trace.
+        if (t_step == t_step_start) return
+
+        n_write = num_local_ibs
+        if (num_procs == 1) n_write = num_ibs
+        ! Relative to the first recorded step, so the first one written is row 0 and the file is
+        ! dense. See the hole discussion above.
+        row = t_step/max(ib_force_stride, 1) - t_step_start/max(ib_force_stride, 1) - 1
+
+        $:GPU_UPDATE(host='[patch_ib(1:num_ibs)]')
+
+        call s_open_ib_force_history()
+
+        do i = 1, n_write
+            ib_idx = i
+            if (num_procs > 1) ib_idx = local_ib_patch_ids(i)
+
+            fields(1) = mytime
+            fields(2:4) = patch_ib(ib_idx)%force(1:3)
+            fields(5:7) = patch_ib(ib_idx)%torque(1:3)
+            fields(8:10) = patch_ib(ib_idx)%vel(1:3)
+            fields(11:13) = patch_ib(ib_idx)%angular_vel(1:3)
+            fields(14:16) = patch_ib(ib_idx)%angles(1:3)
+            fields(17) = patch_ib(ib_idx)%x_centroid
+            fields(18) = patch_ib(ib_idx)%y_centroid
+            fields(19) = patch_ib(ib_idx)%z_centroid
+
+            write (rec, IB_REC_FMT) patch_ib(ib_idx)%gbl_patch_id, fields
+            rec(IB_REC_LEN:IB_REC_LEN) = new_line('a')
+
+#ifdef MFC_MPI
+            disp = (int(row, MPI_OFFSET_KIND)*int(num_gbl_ibs, MPI_OFFSET_KIND) + int(patch_ib(ib_idx)%gbl_patch_id - 1, &
+                    & MPI_OFFSET_KIND))*int(IB_REC_LEN, MPI_OFFSET_KIND)
+            call MPI_FILE_WRITE_AT(ib_hist_file, disp, rec, IB_REC_LEN, MPI_CHARACTER, status, ierr)
+#else
+            write (ib_hist_file, rec=row*num_gbl_ibs + patch_ib(ib_idx)%gbl_patch_id) rec
+#endif
+        end do
+
+    end subroutine s_write_ib_force_history
+
+    !> Open the shared history file. Done once for the run.
+    impure subroutine s_open_ib_force_history
+
+        character(LEN=path_len + 2*name_len) :: file_loc
+        character(LEN=IB_REC_LEN)            :: probe
+        integer                              :: i
+
+#ifdef MFC_MPI
+        integer :: ierr
+        logical :: file_exist
+#endif
+
+        if (ib_hist_file /= -1) return
+
+        ! Every offset below assumes the format emits exactly IB_REC_BODY characters. Measure it once
+        ! rather than trusting that the format and the constant were edited together: a format one
+        ! character wider would shear every record past the first without any other symptom.
+        write (probe, IB_REC_FMT) 0, [(0._wp, i=1, 19)]
+        @:PROHIBIT(len_trim(probe) /= IB_REC_BODY, &
+                   & "IB force record width disagrees with IB_REC_BODY;  IB_REC_FMT and IB_REC_BODY must be changed together")
+
+        file_loc = trim(case_dir) // '/D/ib_forces.dat'
+#ifdef MFC_MPI
+        ! MPI_MODE_CREATE does not truncate, so a shorter run following a longer one in the same
+        ! directory would keep the old tail past its last record. Delete first, as the ib_state
+        ! writer does, then barrier so no rank opens before the delete lands.
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, MPI_INFO_NULL, ierr)
+
+        ! MPI_INFO_NULL, not mpi_info_int: the latter is only created when parallel_io is on
+        ! (m_global_parameters_common.fpp returns before MPI_INFO_CREATE otherwise), and the
+        ! force history is written whatever parallel_io is set to. Passing the uninitialised
+        ! handle aborted every IBM case that runs the solver with parallel_io = F, in
+        ! MPI_Info_dup, at the first recorded step. The hint it carries only disables ROMIO
+        ! write data sieving, which this writer does not depend on.
+        ! Collective: every rank opens, including one holding no body this step.
+        call s_mpi_barrier()
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), MPI_INFO_NULL, ib_hist_file, ierr)
+#else
+        ! Unformatted: the record is already a formatted string, so this writes its bytes verbatim and
+        ! produces the same file the MPI branch does. A formatted direct-access write would need a
+        ! format and would pad rather than emit the string as-is.
+        open (newunit=ib_hist_file, file=trim(file_loc), form='unformatted', access='direct', recl=IB_REC_LEN, status='replace')
+#endif
+
+    end subroutine s_open_ib_force_history
+
+    !> Close the history file. Nothing is buffered, so there is nothing to flush first.
+    impure subroutine s_close_ib_force_history
+
+#ifdef MFC_MPI
+        integer :: ierr
+#endif
+
+        if (ib_hist_file == -1) return
+#ifdef MFC_MPI
+        call MPI_FILE_CLOSE(ib_hist_file, ierr)
+#else
+        close (ib_hist_file)
+#endif
+        ib_hist_file = -1
+
+    end subroutine s_close_ib_force_history
+
     !> @brief Writes IB state records to restart_data/ib_state.dat. Must be called only on rank 0.
     impure subroutine s_write_ib_state_file(time_step)
 
@@ -1095,39 +1241,6 @@ contains
         end if
 
     end subroutine s_write_ib_state_file
-
-    !> Write center-of-mass data at the current time step
-    impure subroutine s_write_com_files(t_step, c_mass_in)
-
-        integer, intent(in)                            :: t_step
-        real(wp), dimension(num_fluids, 5), intent(in) :: c_mass_in
-        integer                                        :: i            !< Generic loop iterator
-        real(wp)                                       :: nondim_time  !< Non-dimensional time
-
-        if (t_step_old /= dflt_int) then
-            nondim_time = real(t_step + t_step_old, wp)*dt
-        else
-            nondim_time = real(t_step, wp)*dt
-        end if
-
-        if (proc_rank == 0) then
-            if (n == 0) then
-                do i = 1, num_fluids
-                    write (i + 120, '(6X,4F24.12)') nondim_time, c_mass_in(i, 1), c_mass_in(i, 2), c_mass_in(i, 5)
-                end do
-            else if (p == 0) then
-                do i = 1, num_fluids
-                    write (i + 120, '(6X,5F24.12)') nondim_time, c_mass_in(i, 1), c_mass_in(i, 2), c_mass_in(i, 3), c_mass_in(i, 5)
-                end do
-            else
-                do i = 1, num_fluids
-                    write (i + 120, '(6X,6F24.12)') nondim_time, c_mass_in(i, 1), c_mass_in(i, 2), c_mass_in(i, 3), c_mass_in(i, &
-                           & 4), c_mass_in(i, 5)
-                end do
-            end if
-        end if
-
-    end subroutine s_write_com_files
 
     !> Write flow probe data at the current time step
     impure subroutine s_write_probe_files(t_step, q_cons_vf, accel_mag)
@@ -1163,12 +1276,13 @@ contains
         real(wp)                        :: max_pres
         real(wp), dimension(2)          :: Re
         real(wp), dimension(6)          :: tau_e
-        real(wp)                        :: G_local
+        real(wp)                        :: G_undamaged, G_damaged
         real(wp)                        :: dyn_p, T
         real(wp)                        :: damage_state
-        integer                         :: i, j, k, l, s, d  !< Generic loop iterator
-        real(wp)                        :: nondim_time       !< Non-dimensional time
-        real(wp)                        :: tmp               !< Temporary variable to store quantity for mpi_allreduce
+        real(wp)                        :: solid_partial_density  !< damageable-solid partial density at the probe cell
+        integer                         :: i, j, k, l, s, d       !< Generic loop iterator
+        real(wp)                        :: nondim_time            !< Non-dimensional time
+        real(wp)                        :: tmp                    !< Temporary variable to store quantity for mpi_allreduce
         real(wp)                        :: rhoYks(1:num_species)
 
         T = dflt_T_guess
@@ -1208,6 +1322,7 @@ contains
                 tau_e(s) = 0._wp
             end do
             damage_state = 0._wp
+            G_damaged = 0._wp
 
             if (n == 0) then
                 if ((probe(i)%x >= x_cb(-1)) .and. (probe(i)%x <= x_cb(m))) then
@@ -1228,7 +1343,7 @@ contains
 
                     ! Computing/Sharing necessary state variables
                     if (hypoelasticity) then
-                        call s_convert_to_mixture_variables(q_cons_vf, j - 2, k, l, rho, gamma, pi_inf, qv, Re, G_local, &
+                        call s_convert_to_mixture_variables(q_cons_vf, j - 2, k, l, rho, gamma, pi_inf, qv, Re, G_undamaged, &
                                                             & fluid_pp(:)%G)
                     else
                         call s_convert_to_mixture_variables(q_cons_vf, j - 2, k, l, rho, gamma, pi_inf, qv)
@@ -1245,13 +1360,22 @@ contains
 
                     if (hypoelasticity) then
                         if (cont_damage) then
-                            damage_state = q_cons_vf(eqn_idx%damage)%sf(j - 2, k, l)
-                            G_local = G_local*max((1._wp - damage_state), 0._wp)
+                            ! Recover D = U_D/m_s, clamped to [0, 1]
+                            solid_partial_density = 0._wp
+                            do s = 1, num_fluids
+                                if (fluid_pp(s)%G > verysmall) then
+                                    solid_partial_density = solid_partial_density + q_cons_vf(eqn_idx%cont%beg + s - 1)%sf(j - 2, &
+                                        & k, l)
+                                end if
+                            end do
+                            damage_state = min(max(q_cons_vf(eqn_idx%damage)%sf(j - 2, k, l)/max(solid_partial_density, &
+                                               & verysmall), 0._wp), 1._wp)
                         end if
+                        G_damaged = G_undamaged*max(1._wp - damage_state, 0._wp)
 
                         call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, k, l), &
                                                 & dyn_p, pi_inf, gamma, rho, qv, rhoYks(:), pres, T, &
-                                                & f_hypoelastic_energy(q_cons_vf, j - 2, k, l, rho, G_local))
+                                                & f_hypoelastic_energy(q_cons_vf, j - 2, k, l, rho, G_undamaged))
                     else
                         call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, k, l), &
                                                 & dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T)
@@ -1308,7 +1432,7 @@ contains
 
                     ! Compute mixture sound Speed
                     call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
-                    if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
+                    if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_damaged/rho)
 
                     accel = accel_mag(j - 2, k, l)
                 end if
@@ -1336,7 +1460,7 @@ contains
                         l = 0
 
                         ! Computing/Sharing necessary state variables
-                        call s_convert_to_mixture_variables(q_cons_vf, j - 2, k - 2, l, rho, gamma, pi_inf, qv, Re, G_local, &
+                        call s_convert_to_mixture_variables(q_cons_vf, j - 2, k - 2, l, rho, gamma, pi_inf, qv, Re, G_undamaged, &
                                                             & fluid_pp(:)%G)
                         do s = 1, num_vels
                             vel(s) = q_cons_vf(eqn_idx%cont%end + s)%sf(j - 2, k - 2, l)/rho
@@ -1350,13 +1474,22 @@ contains
 
                         if (hypoelasticity) then
                             if (cont_damage) then
-                                damage_state = q_cons_vf(eqn_idx%damage)%sf(j - 2, k - 2, l)
-                                G_local = G_local*max((1._wp - damage_state), 0._wp)
+                                ! Recover D = U_D/m_s, clamped to [0, 1]
+                                solid_partial_density = 0._wp
+                                do s = 1, num_fluids
+                                    if (fluid_pp(s)%G > verysmall) then
+                                        solid_partial_density = solid_partial_density + q_cons_vf(eqn_idx%cont%beg + s - 1)%sf(j &
+                                            & - 2, k - 2, l)
+                                    end if
+                                end do
+                                damage_state = min(max(q_cons_vf(eqn_idx%damage)%sf(j - 2, k - 2, l)/max(solid_partial_density, &
+                                                   & verysmall), 0._wp), 1._wp)
                             end if
+                            G_damaged = G_undamaged*max(1._wp - damage_state, 0._wp)
 
                             call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, &
                                                     & k - 2, l), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
-                                                    & f_hypoelastic_energy(q_cons_vf, j - 2, k - 2, l, rho, G_local))
+                                                    & f_hypoelastic_energy(q_cons_vf, j - 2, k - 2, l, rho, G_undamaged))
                         else
                             call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, &
                                                     & k - 2, l), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T)
@@ -1391,7 +1524,7 @@ contains
                         end if
                         ! Compute mixture sound speed
                         call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
-                        if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
+                        if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_damaged/rho)
                     end if
                 end if
             else
@@ -1419,7 +1552,7 @@ contains
 
                             ! Computing/Sharing necessary state variables
                             call s_convert_to_mixture_variables(q_cons_vf, j - 2, k - 2, l - 2, rho, gamma, pi_inf, qv, Re, &
-                                                                & G_local, fluid_pp(:)%G)
+                                                                & G_undamaged, fluid_pp(:)%G)
                             do s = 1, num_vels
                                 vel(s) = q_cons_vf(eqn_idx%cont%end + s)%sf(j - 2, k - 2, l - 2)/rho
                             end do
@@ -1438,14 +1571,23 @@ contains
 
                             if (hypoelasticity) then
                                 if (cont_damage) then
-                                    damage_state = q_cons_vf(eqn_idx%damage)%sf(j - 2, k - 2, l - 2)
-                                    G_local = G_local*max((1._wp - damage_state), 0._wp)
+                                    ! Recover D = U_D/m_s, clamped to [0, 1]
+                                    solid_partial_density = 0._wp
+                                    do s = 1, num_fluids
+                                        if (fluid_pp(s)%G > verysmall) then
+                                            solid_partial_density = solid_partial_density + q_cons_vf(eqn_idx%cont%beg + s &
+                                                & - 1)%sf(j - 2, k - 2, l - 2)
+                                        end if
+                                    end do
+                                    damage_state = min(max(q_cons_vf(eqn_idx%damage)%sf(j - 2, k - 2, &
+                                                       & l - 2)/max(solid_partial_density, verysmall), 0._wp), 1._wp)
                                 end if
+                                G_damaged = G_undamaged*max(1._wp - damage_state, 0._wp)
 
                                 call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l - 2), &
                                                         & q_cons_vf(eqn_idx%alf)%sf(j - 2, k - 2, l - 2), dyn_p, pi_inf, gamma, &
                                                         & rho, qv, rhoYks, pres, T, f_hypoelastic_energy(q_cons_vf, j - 2, k - 2, &
-                                                        & l - 2, rho, G_local))
+                                                        & l - 2, rho, G_undamaged))
                             else
                                 call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l - 2), &
                                                         & q_cons_vf(eqn_idx%alf)%sf(j - 2, k - 2, l - 2), dyn_p, pi_inf, gamma, &
@@ -1460,7 +1602,7 @@ contains
 
                             ! Compute mixture sound speed
                             call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
-                            if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
+                            if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_damaged/rho)
 
                             accel = accel_mag(j - 2, k - 2, l - 2)
                         end if
@@ -1542,8 +1684,9 @@ contains
                                    & vel(1), vel(2), pres, tau_e(1), tau_e(2), tau_e(3)
                         #:endif
                     else
-                        write (i + 30, '(6X,F12.6,F24.8,F24.8,F24.8)') nondim_time, rho, vel(1), pres
-                        print *, 'time =', nondim_time, 'rho =', rho, 'pres =', pres
+                        #:if not MFC_CASE_OPTIMIZATION or num_dims > 1
+                            write (i + 30, '(6X,F12.6,F24.8,F24.8,F24.8,F24.8)') nondim_time, rho, vel(1), vel(2), pres
+                        #:endif
                     end if
                 else
                     #:if not MFC_CASE_OPTIMIZATION or num_dims > 2
@@ -1584,17 +1727,6 @@ contains
 
     end subroutine s_close_run_time_information_file
 
-    !> Closes communication files
-    impure subroutine s_close_com_files()
-
-        integer :: i  !< Generic loop iterator
-
-        do i = 1, num_fluids
-            close (i + 120)
-        end do
-
-    end subroutine s_close_com_files
-
     !> Closes probe files
     impure subroutine s_close_probe_files
 
@@ -1622,10 +1754,6 @@ contains
             end if
         end if
 
-        if (probe_wrt) then
-            @:ALLOCATE(c_mass(num_fluids,5))
-        end if
-
         if (down_sample) then
             m_ds = int((m + 1)/3) - 1
             n_ds = int((n + 1)/3) - 1
@@ -1643,10 +1771,6 @@ contains
     impure subroutine s_finalize_data_output_module
 
         integer :: i
-
-        if (probe_wrt) then
-            @:DEALLOCATE(c_mass)
-        end if
 
         if (down_sample) then
             do i = 1, sys_size

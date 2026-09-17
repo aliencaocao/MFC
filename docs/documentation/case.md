@@ -282,6 +282,13 @@ The code provides three pre-built patches for dimensional extrusion of initial c
   `bf_spatial_support` body force) so no single extrusion axis applies. The file's line
   count, origin, and (uniform) cell spacing must match the run grid; a mismatched file is
   rejected with a fatal error, so regenerate the IC whenever the grid changes.
+- `case(371)`: `case(370)` plus a closed-form spanwise (z) modulation, so the IC has
+  genuine 3D content from step 0. The cross-stream (mom%%beg+1) velocity read from the
+  file is scaled by `1 + 0.5*cos(k_z z)` and the spanwise (mom%%end) component is set
+  from that result; the streamwise component is left as read. `k_z = 2*pi/L_z` uses the
+  global z extent, so the IC does not depend on the MPI decomposition and is continuous
+  across a periodic `bc_z`. Assumes uniform z spacing. Used by
+  `examples/3D_reacting_mixing_layer`.
 
 Setup: Only requires specifying `files_dir` and filename pattern via `file_extension`. The files are located, for example, at `examples/1D_flamelet/IC`, and their format is `prim.XX.YY.file_extension.dat`.
 Implementation: All variables and file handling are managed in the `case.py` file of the simulation.
@@ -359,9 +366,21 @@ This is enabled by adding ``'elliptic_smoothing': "T",`` and ``'elliptic_smoothi
 | `moving_ibm`         | Integer | Sets the method used for IB movement. |
 | `vel(i)`             | Real    | Initial velocity of the moving IB in the i-th direction. |
 | `angular_vel(i)`     | Real    | Initial angular velocity of the moving IB in the i-th direction. |
+| `kin_model`          | Integer | Prescribed kinematics (requires `moving_ibm = 1`, 3D): [0] off; [1] hinged flapping (roll + pitch); [2] smoothed pitch ramp and hold. |
+| `kin_hinge(i)`       | Real    | Hinge point, i-th component. |
+| `kin_offset(i)`      | Real    | Body-frame vector from the hinge to the patch centroid, i-th component. |
+| `kin_phi0`, `kin_theta0` | Real | Roll and pitch amplitudes (rad). |
+| `kin_theta_mean`     | Real    | Mean pitch angle (rad), held before onset and superposed after. |
+| `kin_freq`           | Real    | Flapping frequency (cycles per unit time). |
+| `kin_phase`          | Real    | Pitch phase lead relative to roll (rad); `pi/2` makes pitch lead by a quarter cycle. |
+| `kin_t0`             | Real    | Onset time of flapping. |
+| `kin_ramp`           | Real    | Duration of the raised-cosine amplitude ramp after onset (0 = instantaneous). |
+| `kin_pitch_rate`     | Real    | `kin_model = 2`: nominal pitch rate \f$\Omega\f$ (rad per unit time); the pitch time is `kin_theta0`/\f$\Omega\f$. |
+| `kin_smooth`         | Real    | `kin_model = 2`: smoothing parameter \f$a\f$ of the Eldredge log-cosh ramp (11 in the AIAA canonical cases). |
 | `coefficient_of_restitution`     | Real    | A number 0 to 1 describing how elastic IB collisions are |
 | `collision_model`     | Integer    | Integer to select the collision model being used for IB collisions. |
 | `collision_time`     | Real    | Amount of simulation time used to resolve collisions |
+| `collision_temporal_resolution`     | Integer    | Minimum number of adaptive time steps used to resolve each collision |
 | `ib_coefficient_of_friction`     | Real    | Coefficient of friction used in IB collisions |
 
 These parameters should be prepended with `patch_ib(j)%` where $j$ is the patch index.
@@ -403,6 +422,10 @@ Additional details on this specification can be found in [NACA airfoil](https://
 - `angular_vel(i)` is the initial angular velocity of the IB about the x, y, z axes for i=1, 2, 3 in radians per second. When `moving_ibm` equals 2, this rotation rate is just the starting rate of the object, which will then change due to external torques. If `moving_ibm` equals 1, then this is constant if it is a number, or can be described analytically with an expression.
 
   Moving-IB analytic expressions use the same Python syntax and error-reporting as IC patch expressions (see the "Analytical Definition of Primitive Variables" section above).
+
+- `kin_model = 1` prescribes hinged flapping kinematics at run time (no analytic expressions, so the binary is shared across parameter values): roll \f$\phi\f$ about the lab \f$x\f$ axis through `kin_hinge` and pitch \f$\theta\f$ about the body spanwise (\f$y\f$) axis through the hinge, composed as \f$R = R_x(\phi) R_y(\theta)\f$. With \f$\tau = t - t_0\f$ and amplitude envelope \f$A(\tau)\f$ (0 before onset, raised cosine over `kin_ramp`, then 1): \f$\phi = A \phi_0 \sin(2\pi f \tau)\f$, \f$\theta = \theta_m + A \theta_0 \sin(2\pi f \tau + \psi)\f$. The centroid follows \f$x_c = x_h + R\,\mathbf{r}_\mathrm{off}\f$ and the ghost-cell velocities use the lab-frame angular velocity \f$\dot\phi \mathbf{e}_x + \dot\theta R_x(\phi)\mathbf{e}_y\f$. Set the initial `x[y,z]_centroid` and `angles` consistently with \f$t = 0\f$ so pre-process marks the body in the right place.
+
+- `kin_model = 2` is the smoothed linear pitch-ramp-and-hold of the AIAA low-Reynolds-number canonical cases (Eldredge et al. 2009, Ol et al. 2010) about the hinge, with no roll: \f$\theta(t) = \theta_m + \frac{\theta_0}{2}\left[1 + \frac{1}{a t_p}\log\frac{\cosh(a\tau)}{\cosh(a(\tau - t_p))}\right]\f$, \f$\tau = t - t_0\f$, \f$t_p = \theta_0/\Omega\f$, so the angle rises from `kin_theta_mean` by `kin_theta0` at nominal rate `kin_pitch_rate` starting at `kin_t0`, smoothed by `kin_smooth`. The same hinge, offset and centroid conventions as `kin_model = 1` apply.
   Available variables: `x` (`x_cc(i)`), `y` (`y_cc(j)`), `z` (`z_cc(k)`), `t` (current simulation time), and `r` (the IB patch radius).
   The same intrinsic functions and `pi` constant apply; bare `e` is not available.
 
@@ -411,6 +434,8 @@ Additional details on this specification can be found in [NACA airfoil](https://
 - `collision_model` is an integer to select the collision model being used for IB collisions. Using 0 disables collisions and collision checking. 1 enables the soft-sphere collision model, where all IBs must be circles or sphere and those IBs can collide with each other as well as walls.
 
 - `collision_time` is approximately the amount of simulation time used to resolve collisions. This is handled by modifying the spring constant used to apply collision forces.
+
+- `collision_temporal_resolution` restricts the adaptive time step (`cfl_adap_dt`) to at most `collision_time / collision_temporal_resolution` while any collision is occurring, so that each collision is resolved with at least that many time steps. Pairing it with `ramp_ratio` limits how quickly the time step grows back once the collision ends.
 
 - `ib_coefficient_of_friction` is the coefficient of friction used in IB collisions.
 
@@ -536,6 +561,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `cfl_const_dt`             | Logical | CFL based non-adaptive time-stepping |
 | `cfl_dt`                   | Logical | Enable CFL-based time stepping |
 | `cfl_target`               | Real    | Specified CFL value |
+| `ramp_ratio`               | Real    | Maximum factor by which the adaptive time step may grow per time step |
 | `n_start`                  | Integer | Save file from which to start simulation |
 | `t_save`                   | Real    | Time duration between data output |
 | `t_stop`                   | Real    | Simulation stop time |
@@ -700,6 +726,8 @@ restart data being resumed from. Pass `-t pre_process` explicitly (as in the res
 
 - `cfl_target` specifies the target CFL value
 
+- `ramp_ratio` limits how much the adaptive time step can grow from one time step to the next: `dt` is capped at `ramp_ratio` times the previous `dt`. Must be at least 1. When unset, the time step growth is unlimited.
+
 - `n_start` specifies the save file to start at
 
 - `t_save` specifies the time interval between data output during the simulation
@@ -728,6 +756,8 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `alpha_wrt(i)`          | Logical | Add the volume fraction of fluid $i$ to the database	|
 | `gamma_wrt`             | Logical | Add the specific heat ratio function to the database	|
 | `heat_ratio_wrt`        | Logical | Add the specific heat ratio to the database	|
+| `ib_force_wrt`          | Logical | Record the immersed-boundary force history to `D/ib_forces.dat` (default off) |
+| `ib_force_stride`       | Integer | Stride, in time steps, of the per-step immersed-boundary force record (default 1) |
 | `ib_state_wrt`          | Logical | Parameter to handle writing IB state on saves and outputting the state as a point mesh to SILO files. |
 | `pi_inf_wrt`            | Logical | Add the liquid stiffness function to the database |
 | `pres_inf_wrt`          | Logical | Add the liquid stiffness to the formatted database	 |
@@ -796,6 +826,34 @@ If `file_per_process` is true, then pre_process, simulation, and post_process mu
 - `probe_wrt` activates the output of state variables at coordinates specified by `probe(i)%[x;y,z]`.
 
 - `ib_state_wrt` is used to trigger post-processing of the IB state to be written out as a point mesh in the SILO files. When no IBs are moving, it also triggers force and torque calculation so that those values may be written to the output state files.
+
+- `ib_force_wrt` records the force, torque and kinematics of every immersed boundary in a single shared text file, `D/ib_forces.dat`, described below. It is off by default: the history is written every step, which at large rank counts is a cost a run should opt into rather than inherit. `ib_force_stride` writes only every N-th step, for runs long enough that the history itself becomes large.
+
+#### Immersed-boundary force history {#sec-ib-force-history}
+
+`D/ib_forces.dat` holds one fixed-width record per body per written step. Its twenty columns are
+
+| Columns | Quantity |
+| ---:    | :---     |
+| 1       | body id (the global `patch_ib` index) |
+| 2       | time |
+| 3–5     | force, x/y/z |
+| 6–8     | torque, x/y/z |
+| 9–11    | velocity, x/y/z |
+| 12–14   | angular velocity, x/y/z |
+| 15–17   | angles about x/y/z |
+| 18–20   | centroid, x/y/z |
+
+The file carries no header line, because every record sits at a computed byte offset and a header would shift them all. Each record is exactly 353 bytes including its newline (`I10` followed by nineteen `1X,ES17.9E3` fields), so the whole file loads with `numpy.loadtxt` and a single body or step can be read without scanning it:
+
+```
+row    = t_step / ib_force_stride - t_step_start / ib_force_stride - 1
+offset = (row * num_ibs + ib_id - 1) * 353
+```
+
+Rows count from the first step the run records, not from `t_step`, so row 0 is the first row of the file whether the run starts at step 0 or resumes from a restart. The first recorded step is the first multiple of `ib_force_stride` after `t_step_start`; `t_step_start` itself is skipped, because at that point the force is still the one from before the run began.
+
+Rows are written in global body-id order, so the file is byte-identical however the domain is decomposed, and no merge step is needed after a parallel run.
 
 - `output_partial_domain` activates the output of part of the domain specified by `[x,y,z]_output%%beg` and `[x,y,z]_output%%end`.
 This is useful for large domains where only a portion of the domain is of interest.
@@ -1152,7 +1210,7 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
 
-- `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
+- `cont_damage` activates the continuum damage model for hypoelastic solid materials (requires `hypoelasticity = T`; HLL/HLLC only). Damage is produced by tensile maximum principal Cauchy stress beyond `tau_star` (\f$\geq 0\f$) at rate `(alpha_bar*(sigma_1 - tau_star))**cont_damage_s` and is transported with the damageable-solid partial mass; see @ref equations for the model statement (\cite Cao19; \cite Spratt24). `tau_star`, `cont_damage_s` (\f$> 0\f$), and `alpha_bar` (\f$\geq 0\f$) are empirically determined.
 
 - `reactive_burn` converts a "reactant" fluid into a "product" fluid (`num_fluids = 2`, ``chemistry = 'F'``) via a programmed pressure burn `dlambda/dt = rburn%%k (1 - lambda) ((p - rburn%%pign)/rburn%%pref)^rburn%%n`. The two fluids share the same `gamma`/`pi_inf` and differ only in `qv`, so the conversion releases `qv` through the mixture EOS — a reactive-Euler/ZND detonation model on the diffuse-interface framework. It runs on the 5-equation (`model_eqns = 2`) and 6-equation (`model_eqns = 3`) multi-fluid models. Setting `rburn%%ta > 0` multiplies the rate by an Arrhenius factor `exp(-rburn%%ta/T)`, where `T` is the reactant phasic temperature, giving temperature-driven ignition instead of a pure pressure switch.
 
@@ -1315,6 +1373,9 @@ The entries labeled "Characteristic." are characteristic boundary conditions bas
 | `bc_[x,y,z]%%grcbc_out`        | Logical | Enable grcbc for subsonic outflow (pressure)|
 | `bc_[x,y,z]%%grcbc_vel_out`    | Logical | Enable grcbc for subsonic outflow (pressure + normal velocity) |
 | `bc_[x,y,z]%%vel_in`           | Real Array | Inflow velocities in x, y and z directions |
+| `bc_[x,y,z]%%vel_in_ramp`      | Real | Duration of a smooth start-up of the inflow velocity (0 = none) |
+| `bc_[x,y,z]%%vel_in_t0`        | Real | Time at which that ramp begins |
+| `bc_[x,y,z]%%vel_in_frac0`     | Real | Fraction of the final inflow velocity held before the ramp |
 | `bc_[x,y,z]%%vel_out`          | Real Array | Outflow velocities in x, y and z directions |
 | `bc_[x,y,z]%%pres_in`          | Real    | Inflow pressure |
 | `bc_[x,y,z]%%pres_out`         | Real    | Outflow pressure |
@@ -1322,6 +1383,8 @@ The entries labeled "Characteristic." are characteristic boundary conditions bas
 | `bc_[x,y,z]%%alpha_in`         | Real Array | Inflow void fraction |
 
 This boundary condition can be used for subsonic inflow (`bc_[x,y,z]%[beg,end]` = -7) and subsonic outflow (`bc_[x,y,z]%[beg,end]` = -8) characteristic boundary conditions. These are based on \cite Pirozzoli13. This enables to provide inflow and outflow conditions outside the computational domain.
+
+`bc_[x,y,z]%%vel_in_ramp` starts the inflow smoothly instead of holding it constant, which is what a jet or a tunnel accelerating from rest requires: the start-up is the event of interest, not a transient to be discarded. The inflow velocity is scaled by \f$f(t) = f_0 + (1 - f_0)\left[1 + \tanh\left(6 (t - t_0)/\tau - 3\right)\right]/2\f$, with \f$\tau\f$ = `vel_in_ramp`, \f$t_0\f$ = `vel_in_t0` and \f$f_0\f$ = `vel_in_frac0`, so it leaves \f$f_0\f$ of the final velocity at \f$t_0\f$ and is within half a percent of it at \f$t_0 + \tau\f$. A boundary with `vel_in_ramp = 0` is held constant, as before.
 
 ### Patch types {#patch-types}
 
