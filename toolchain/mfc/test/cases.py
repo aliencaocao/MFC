@@ -1157,6 +1157,43 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             cases.append(define_case_d(stack, "weno_avg", {"weno_avg": "T"}))
             stack.pop()
 
+        # The patches above are quiescent, so their viscous stress is zero. A round jet in the middle slab
+        # adds radial and axial shear layers that exercise the cylindrical viscous face flux; its slight
+        # overpressure keeps every face off an exactly zero contact speed, where HLLC's upwinding is a tie.
+        cases.append(
+            define_case_d(
+                stack,
+                "jet",
+                {
+                    "num_patches": 4,
+                    "patch_icpp(4)%geometry": 10,
+                    "patch_icpp(4)%x_centroid": 2.5,
+                    "patch_icpp(4)%y_centroid": 0.0,
+                    "patch_icpp(4)%z_centroid": 0.0,
+                    "patch_icpp(4)%radius": 0.5,
+                    "patch_icpp(4)%length_x": 3.0,
+                    "patch_icpp(4)%length_y": -1e6,
+                    "patch_icpp(4)%length_z": -1e6,
+                    "patch_icpp(4)%alter_patch(2)": "T",
+                    "patch_icpp(4)%vel(1)": 0.1,
+                    "patch_icpp(4)%vel(2)": 0.0,
+                    "patch_icpp(4)%vel(3)": 0.0,
+                    "patch_icpp(4)%pres": 0.55,
+                    "patch_icpp(4)%alpha_rho(1)": 0.25,
+                    "patch_icpp(4)%alpha(1)": 0.5,
+                    "patch_icpp(4)%alpha_rho(2)": 0.25,
+                    "patch_icpp(4)%alpha(2)": 0.5,
+                    "patch_icpp(4)%r0": 1,
+                    "patch_icpp(4)%v0": 0,
+                    "fluid_pp(1)%Re(1)": 0.25,
+                    "fluid_pp(1)%Re(2)": 0.25,
+                    "fluid_pp(2)%Re(1)": 0.25,
+                    "fluid_pp(2)%Re(2)": 0.25,
+                    "dt": 5.0e-6,
+                },
+            )
+        )
+
         stack.pop()
         stack.pop()
 

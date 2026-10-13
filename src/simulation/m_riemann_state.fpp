@@ -262,7 +262,7 @@ contains
     !! geometries. For more information please refer to: 1) s_compute_cartesian_viscous_source_flux 2)
     !! s_compute_cylindrical_viscous_source_flux
     subroutine s_compute_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, dvelR_dy_vf, &
-        & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+        & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
 
         type(scalar_field), dimension(num_vels), intent(in) :: velL_vf, velR_vf, dvelL_dx_vf, dvelR_dx_vf, dvelL_dy_vf, &
              & dvelR_dy_vf, dvelL_dz_vf, dvelR_dz_vf
@@ -270,11 +270,10 @@ contains
         type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
         type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
         integer, intent(in)                                    :: norm_dir
-        type(int_bounds_info), intent(in)                      :: ix, iy, iz
 
         if (grid_geometry == 3) then
             call s_compute_cylindrical_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, &
-                & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+                & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
         else
             call s_compute_cartesian_viscous_source_flux(dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, dvelR_dx_vf, dvelR_dy_vf, &
                 & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
@@ -766,7 +765,7 @@ contains
 
     !> Compute cylindrical viscous source flux contributions for momentum and energy
     subroutine s_compute_cylindrical_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, &
-        & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+        & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
 
         type(scalar_field), dimension(num_dims), intent(in)    :: velL_vf, velR_vf
         type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dx_vf, dvelR_dx_vf
@@ -775,7 +774,6 @@ contains
         type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
         type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
         integer, intent(in)                                    :: norm_dir
-        type(int_bounds_info), intent(in)                      :: ix, iy, iz
 
         ! Local variables
 
@@ -814,9 +812,9 @@ contains
         $:GPU_PARALLEL_LOOP(collapse=3, private='[idx_rp, avg_v_int, avg_dvdx_int, avg_dvdy_int, avg_dvdz_int, Re_s, Re_b, &
                             & vel_src_int, r_eff, divergence_cyl, stress_vector_shear, stress_normal_bulk, div_v_term_const, &
                             & gamma_dot, D_xx, D_yy, D_zz, D_xy, D_xz, D_yz, Re_nn, alpha_avg, fl]')
-        do l = iz%beg, iz%end
-            do k = iy%beg, iy%end
-                do j = ix%beg, ix%end
+        do l = isz%beg, isz%end
+            do k = isy%beg, isy%end
+                do j = isx%beg, isx%end
                     ! Determine indices for the 'right' state for averaging across the interface
                     idx_rp = [j, k, l]
                     idx_rp(norm_dir) = idx_rp(norm_dir) + 1
