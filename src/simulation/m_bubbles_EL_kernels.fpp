@@ -480,6 +480,12 @@ contains
             if (s_cell(i) < 0._wp) get_cell(i) = get_cell(i) - 1
         end do
 
+        ! A bubble can sit outside the domain before the boundary enforcement deletes
+        ! it; clamp so the grid lookups that follow stay in bounds.
+        get_cell(1) = max(0, min(get_cell(1), m))
+        get_cell(2) = max(0, min(get_cell(2), n))
+        get_cell(3) = max(0, min(get_cell(3), p))
+
     end subroutine s_get_cell
 
     !> Precompute cell-centered pressure gradients (dp/dx, dp/dy, dp/dz)
