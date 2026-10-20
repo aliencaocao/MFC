@@ -72,6 +72,16 @@
             end if
         end if
 
+        if (win_on) then
+            if (ix < 0 .or. ix > m) then
+                if (iy < win_yb .or. iy > win_ye .or. iz < win_zb .or. iz > win_ze) cycle
+            else if (iy < 0 .or. iy > n) then
+                if (ix < win_xb .or. ix > win_xe .or. iz < win_zb .or. iz > win_ze) cycle
+            else
+                if (ix < win_xb .or. ix > win_xe .or. iy < win_yb .or. iy > win_ye) cycle
+            end if
+        end if
+
         sx = ix; sy = iy; sz = iz
         valid_cell = .true.
         reflect_x = .false.; reflect_y = .false.; reflect_z = .false.
@@ -172,6 +182,11 @@ module m_boundary_common
     !> Lagrangian-bubble beta (void-fraction) buffer bounds (#1290)
     type(int_bounds_info), dimension(3) :: beta_bc_bounds
     $:GPU_DECLARE(create='[beta_bc_bounds]')
+
+    public :: pb_win_on, pb_win_xb, pb_win_xe, pb_win_yb, pb_win_ye, pb_win_zb, pb_win_ze
+
+    logical :: pb_win_on = .false.
+    integer :: pb_win_xb, pb_win_xe, pb_win_yb, pb_win_ye, pb_win_zb, pb_win_ze
 
 #ifdef MFC_HALO_SINGLE_ROUND
     !> The single exchange runs only when no rank has a Dirichlet face (see s_check_single_round_bcs).
@@ -368,6 +383,8 @@ contains
         integer :: gx, gy, gz, sx, sy, sz, mx, my, mz, ex, ey, ez
         integer :: dim_end, nrm, lsrc, bc_iloc, icomp, q
         integer :: m_b, n_b, p_b, buff_size_b, sys_size_b, mom_beg_b, mom_end_b
+        integer :: win_xb, win_xe, win_yb, win_ye, win_zb, win_ze
+        logical :: win_on
         integer(kind=8) :: off, work
         real(wp) :: wall_vel, Twall
         real(stp) :: bc_val
@@ -399,6 +416,10 @@ contains
                 has_physical = has_physical .or. bc_z%beg < 0 .or. bc_z%end < 0
             #:endif
 
+            win_xb = pb_win_xb; win_xe = pb_win_xe
+            win_yb = pb_win_yb; win_ye = pb_win_ye
+            win_zb = pb_win_zb; win_ze = pb_win_ze
+            win_on = pb_win_on
             if (simple_uniform .and. has_physical) then
                 z_beg = 0; z_full = 1
                 #:if num_dims > 2

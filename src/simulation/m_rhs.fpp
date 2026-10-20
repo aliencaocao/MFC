@@ -993,6 +993,15 @@ contains
             call nvtxEndRange
 #endif
 
+#if defined(MFC_ACTIVE_BOX) && defined(MFC_FUSED_RHS)
+            pb_win_on = ab_active .and. f_use_fused_rhs_openacc() .and. .not. viscous .and. .not. surface_tension .and. .not. igr &
+                & .and. .not. chemistry .and. .not. heat_conduction .and. .not. bubbles_euler .and. .not. qbmm
+            if (pb_win_on) then
+                pb_win_xb = ab_x%beg; pb_win_xe = ab_x%end
+                pb_win_yb = ab_y%beg; pb_win_ye = ab_y%end
+                pb_win_zb = ab_z%beg; pb_win_ze = ab_z%end
+            end if
+#endif
             call nvtxStartRange("RHS-COMMUNICATION")
 #if defined(MFC_FUSED_RHS)
             if (primitive_next_active) then

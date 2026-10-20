@@ -1392,7 +1392,6 @@ contains
             call s_close_run_time_information_file()
         end if
 
-        ! Same guard as the allocation
         if (.not. igr .and. (chemistry .or. heat_conduction)) then
             @:DEALLOCATE(q_T_sf%sf)
         end if

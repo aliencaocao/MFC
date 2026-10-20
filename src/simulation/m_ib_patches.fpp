@@ -9,13 +9,73 @@
 #:include '3dHardcodedIC.fpp'
 #:include 'macros.fpp'
 
-! Interior checks write ib_markers with an atomic max: the ib-parallelism path loops patches in
-! parallel and interpenetrating soft-sphere particles can both claim a cell, so a plain write is a
-! race; the max also makes the grid-cell path pick the same winner (highest encoded_patch_id)
-! deterministically.
 #:def ib_mark_interior(K)
     $:GPU_ATOMIC(atomic='update')
     ib_markers%sf(i, j, ${K}$) = max(ib_markers%sf(i, j, ${K}$), encoded_patch_id)
+#:enddef
+
+#:def ib_geometry_tests_3d()
+    if (patch_ib(patch_id)%geometry == 8) then
+        radius = patch_ib(patch_id)%radius
+        if (f_is_inside_sphere(xyz_local(1), xyz_local(2), xyz_local(3), radius)) then
+            @:ib_mark_interior(k)
+        end if
+    else if (patch_ib(patch_id)%geometry == 9) then
+        length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, patch_ib(patch_id)%length_z]
+        if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), length)) then
+            @:ib_mark_interior(k)
+        end if
+    else if (patch_ib(patch_id)%geometry == 10) then
+        radius = patch_ib(patch_id)%radius
+        if (f_is_inside_cylinder(xyz_local(2), xyz_local(3), xyz_local(1), radius, patch_ib(patch_id)%length_x)) then
+            @:ib_mark_interior(k)
+        end if
+    else if (patch_ib(patch_id)%geometry == 11) then
+        airfoil_id = patch_ib(patch_id)%airfoil_id
+        xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
+        if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), xyz_local(3), patch_ib(patch_id)%length_z, airfoil_id)) then
+            @:ib_mark_interior(k)
+        end if
+    else if (patch_ib(patch_id)%geometry == 12) then
+        xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
+        model_id = patch_ib(patch_id)%model_id
+        eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
+        if (eta > stl_models(model_id)%model_threshold) then
+            @:ib_mark_interior(k)
+        end if
+    end if
+#:enddef
+
+#:def ib_geometry_tests_2d()
+    if (patch_ib(patch_id)%geometry == 2) then
+        radius = patch_ib(patch_id)%radius
+        if (f_is_inside_cylinder(xyz_local(1), xyz_local(2), 0._wp, radius, 0._wp)) then
+            @:ib_mark_interior(0)
+        end if
+    else if (patch_ib(patch_id)%geometry == 3) then
+        length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
+        if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), length)) then
+            @:ib_mark_interior(0)
+        end if
+    else if (patch_ib(patch_id)%geometry == 4) then
+        airfoil_id = patch_ib(patch_id)%airfoil_id
+        xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
+        if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), 0._wp, 0._wp, airfoil_id)) then
+            @:ib_mark_interior(0)
+        end if
+    else if (patch_ib(patch_id)%geometry == 5) then
+        xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
+        model_id = patch_ib(patch_id)%model_id
+        eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
+        if (eta > stl_models(model_id)%model_threshold) then
+            @:ib_mark_interior(0)
+        end if
+    else if (patch_ib(patch_id)%geometry == 6) then
+        length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
+        if (f_is_inside_ellipse(xyz_local(1), xyz_local(2), length)) then
+            @:ib_mark_interior(0)
+        end if
+    end if
 #:enddef
 
 !> @brief Immersed boundary patch geometry constructors for 2D and 3D shapes
@@ -98,39 +158,7 @@ contains
                                         ! rotate the frame into the IB's coordinates
                                         xyz_local = matmul(patch_ib(patch_id)%rotation_matrix_inverse, xyz_local)
 
-                                        ! perform the interior check for the patch geometry of this IB
-                                        if (patch_ib(patch_id)%geometry == 8) then
-                                            ! sphere geometry
-                                            radius = patch_ib(patch_id)%radius
-
-                                            if (f_is_inside_sphere(xyz_local(1), xyz_local(2), xyz_local(3), &
-                                                & radius)) @:ib_mark_interior(k)
-                                        else if (patch_ib(patch_id)%geometry == 9) then
-                                            ! cuboid geometry
-                                            length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, &
-                                                               & patch_ib(patch_id)%length_z]
-                                            if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), &
-                                                & length)) @:ib_mark_interior(k)
-                                        else if (patch_ib(patch_id)%geometry == 10) then
-                                            ! cylinder geometry
-                                            radius = patch_ib(patch_id)%radius
-                                            if (f_is_inside_cylinder(xyz_local(2), xyz_local(3), xyz_local(1), radius, &
-                                                & patch_ib(patch_id)%length_x)) @:ib_mark_interior(k)
-                                        else if (patch_ib(patch_id)%geometry == 11) then
-                                            ! 3D airfoil geometry
-                                            airfoil_id = patch_ib(patch_id)%airfoil_id
-                                            xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                            if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), xyz_local(3), &
-                                                & patch_ib(patch_id)%length_z, airfoil_id)) @:ib_mark_interior(k)
-                                        else if (patch_ib(patch_id)%geometry == 12) then
-                                            ! STL model geometry
-                                            xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                            model_id = patch_ib(patch_id)%model_id
-                                            eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
-                                            if (eta > stl_models(model_id)%model_threshold) then
-                                                @:ib_mark_interior(k)
-                                            end if
-                                        end if
+                                        @:ib_geometry_tests_3d()
                                     end do
                                 end do
                             end do
@@ -168,37 +196,7 @@ contains
                                 ! rotate the frame into the IB's coordinates
                                 xyz_local = matmul(patch_ib(patch_id)%rotation_matrix_inverse, xyz_local)
 
-                                ! perform the interior check for the patch geometry of this IB
-                                if (patch_ib(patch_id)%geometry == 2) then
-                                    ! circular geometries
-                                    radius = patch_ib(patch_id)%radius
-                                    if (f_is_inside_cylinder(xyz_local(1), xyz_local(2), 0._wp, radius, &
-                                        & 0._wp)) @:ib_mark_interior(0)
-                                else if (patch_ib(patch_id)%geometry == 3) then
-                                    ! rectangular geometries
-                                    length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
-                                    if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), length)) ib_markers%sf(i, j, &
-                                        & 0) = encoded_patch_id
-                                else if (patch_ib(patch_id)%geometry == 4) then
-                                    ! 2D airfoil geometry
-                                    airfoil_id = patch_ib(patch_id)%airfoil_id
-                                    xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                    if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), 0._wp, 0._wp, &
-                                        & airfoil_id)) @:ib_mark_interior(0)
-                                else if (patch_ib(patch_id)%geometry == 5) then
-                                    ! STL model geometry
-                                    xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                    model_id = patch_ib(patch_id)%model_id
-                                    eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
-                                    if (eta > stl_models(model_id)%model_threshold) then
-                                        @:ib_mark_interior(0)
-                                    end if
-                                else if (patch_ib(patch_id)%geometry == 6) then
-                                    ! ellipse geometry
-                                    length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
-                                    if (f_is_inside_ellipse(xyz_local(1), xyz_local(2), length)) ib_markers%sf(i, j, &
-                                        & 0) = encoded_patch_id
-                                end if
+                                @:ib_geometry_tests_2d()
                             end do
                         end do
                         $:END_GPU_PARALLEL_LOOP()
@@ -249,55 +247,7 @@ contains
                                         ! rotate the frame into the IB's coordinates
                                         xyz_local = matmul(patch_ib(patch_id)%rotation_matrix_inverse, xyz_local)
 
-                                        ! perform the interior check for the patch geometry of this IB. Writes to ib_markers use
-                                        ! an atomic max (not a plain assignment) because this loop is parallel over patch_id: the
-                                        ! soft-sphere collision model allows particles to physically interpenetrate by design, so
-                                        ! two different patches can both claim the same overlapping cell here. A plain write would
-                                        ! be a data race with a nondeterministic winner; the atomic max makes the higher
-                                        ! encoded_patch_id win consistently every time, regardless of thread scheduling.
-                                        if (patch_ib(patch_id)%geometry == 8) then
-                                            ! sphere geometry
-                                            radius = patch_ib(patch_id)%radius
-
-                                            if (f_is_inside_sphere(xyz_local(1), xyz_local(2), xyz_local(3), radius)) then
-                                                $:GPU_ATOMIC(atomic='update')
-                                                ib_markers%sf(i, j, k) = max(ib_markers%sf(i, j, k), encoded_patch_id)
-                                            end if
-                                        else if (patch_ib(patch_id)%geometry == 9) then
-                                            ! cuboid geometry
-                                            length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, &
-                                                               & patch_ib(patch_id)%length_z]
-                                            if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), length)) then
-                                                $:GPU_ATOMIC(atomic='update')
-                                                ib_markers%sf(i, j, k) = max(ib_markers%sf(i, j, k), encoded_patch_id)
-                                            end if
-                                        else if (patch_ib(patch_id)%geometry == 10) then
-                                            ! cylinder geometry
-                                            radius = patch_ib(patch_id)%radius
-                                            if (f_is_inside_cylinder(xyz_local(2), xyz_local(3), xyz_local(1), radius, &
-                                                & patch_ib(patch_id)%length_x)) then
-                                                $:GPU_ATOMIC(atomic='update')
-                                                ib_markers%sf(i, j, k) = max(ib_markers%sf(i, j, k), encoded_patch_id)
-                                            end if
-                                        else if (patch_ib(patch_id)%geometry == 11) then
-                                            ! 3D airfoil geometry
-                                            airfoil_id = patch_ib(patch_id)%airfoil_id
-                                            xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                            if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), xyz_local(3), &
-                                                & patch_ib(patch_id)%length_z, airfoil_id)) then
-                                                $:GPU_ATOMIC(atomic='update')
-                                                ib_markers%sf(i, j, k) = max(ib_markers%sf(i, j, k), encoded_patch_id)
-                                            end if
-                                        else if (patch_ib(patch_id)%geometry == 12) then
-                                            ! STL model geometry
-                                            xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                            model_id = patch_ib(patch_id)%model_id
-                                            eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
-                                            if (eta > stl_models(model_id)%model_threshold) then
-                                                $:GPU_ATOMIC(atomic='update')
-                                                ib_markers%sf(i, j, k) = max(ib_markers%sf(i, j, k), encoded_patch_id)
-                                            end if
-                                        end if
+                                        @:ib_geometry_tests_3d()
                                     end do
                                 end do
                             end do
@@ -335,51 +285,7 @@ contains
                                 ! rotate the frame into the IB's coordinates
                                 xyz_local = matmul(patch_ib(patch_id)%rotation_matrix_inverse, xyz_local)
 
-                                ! perform the interior check for the patch geometry of this IB. Writes to ib_markers use an
-                                ! atomic max (not a plain assignment) because this loop is parallel over patch_id: the
-                                ! soft-sphere collision model allows particles to physically interpenetrate by design, so two
-                                ! different patches can both claim the same overlapping cell here. A plain write would be a data
-                                ! race with a nondeterministic winner; the atomic max makes the higher encoded_patch_id win
-                                ! consistently every time, regardless of thread scheduling.
-                                if (patch_ib(patch_id)%geometry == 2) then
-                                    ! circular geometries
-                                    radius = patch_ib(patch_id)%radius
-                                    if (f_is_inside_cylinder(xyz_local(1), xyz_local(2), 0._wp, radius, 0._wp)) then
-                                        $:GPU_ATOMIC(atomic='update')
-                                        ib_markers%sf(i, j, 0) = max(ib_markers%sf(i, j, 0), encoded_patch_id)
-                                    end if
-                                else if (patch_ib(patch_id)%geometry == 3) then
-                                    ! rectangular geometries
-                                    length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
-                                    if (f_is_inside_cuboid(xyz_local(1), xyz_local(2), xyz_local(3), length)) then
-                                        $:GPU_ATOMIC(atomic='update')
-                                        ib_markers%sf(i, j, 0) = max(ib_markers%sf(i, j, 0), encoded_patch_id)
-                                    end if
-                                else if (patch_ib(patch_id)%geometry == 4) then
-                                    ! 2D airfoil geometry
-                                    airfoil_id = patch_ib(patch_id)%airfoil_id
-                                    xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                    if (f_is_inside_airfoil(xyz_local(1), xyz_local(2), 0._wp, 0._wp, airfoil_id)) then
-                                        $:GPU_ATOMIC(atomic='update')
-                                        ib_markers%sf(i, j, 0) = max(ib_markers%sf(i, j, 0), encoded_patch_id)
-                                    end if
-                                else if (patch_ib(patch_id)%geometry == 5) then
-                                    ! STL model geometry
-                                    xyz_local = xyz_local - patch_ib(patch_id)%centroid_offset
-                                    model_id = patch_ib(patch_id)%model_id
-                                    eta = f_model_is_inside(gpu_ntrs(model_id), model_id, xyz_local)
-                                    if (eta > stl_models(model_id)%model_threshold) then
-                                        $:GPU_ATOMIC(atomic='update')
-                                        ib_markers%sf(i, j, 0) = max(ib_markers%sf(i, j, 0), encoded_patch_id)
-                                    end if
-                                else if (patch_ib(patch_id)%geometry == 6) then
-                                    ! ellipse geometry
-                                    length = [patch_ib(patch_id)%length_x, patch_ib(patch_id)%length_y, 0._wp]
-                                    if (f_is_inside_ellipse(xyz_local(1), xyz_local(2), length)) then
-                                        $:GPU_ATOMIC(atomic='update')
-                                        ib_markers%sf(i, j, 0) = max(ib_markers%sf(i, j, 0), encoded_patch_id)
-                                    end if
-                                end if
+                                @:ib_geometry_tests_2d()
                             end do
                         end do
                     end do
@@ -535,10 +441,8 @@ contains
         else if (patch%geometry == 3) then
             bound = 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2)
         else if (patch%geometry == 4 .or. patch%geometry == 11) then
-            ! rectangular geometries
             bound = ib_airfoil(patch%airfoil_id)%c
         else if (patch%geometry == 5) then
-            ! STL model geometry
             lx(1) = stl_bounding_boxes(patch%model_id, 1, 1)
             lx(2) = stl_bounding_boxes(patch%model_id, 1, 3)
             ly(1) = stl_bounding_boxes(patch%model_id, 2, 1)
@@ -546,13 +450,11 @@ contains
 
             bound = 0.5_wp*sqrt((lx(2) - lx(1))**2 + (ly(2) - ly(1))**2)
         else if (patch%geometry == 6) then
-            ! ellipse geometry
             bound = 0.5_wp*max(patch%length_x, patch%length_y)
         else if (patch%geometry == 9) then
             ! cuboid geometries
             bound = 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2 + patch%length_z**2)
         else if (patch%geometry == 10) then
-            ! cylinder geometry
             bound = sqrt(patch%radius**2 + patch%length_x**2)
         else if (patch%geometry == 12) then
             ! Local-space bounding box extents (min=1, max=2 in the third index)
@@ -582,7 +484,6 @@ contains
         logical                               :: outside_domain
 
         if (patch%geometry == 5) then
-            ! STL model geometry
             lx(1) = stl_bounding_boxes(patch%model_id, 1, 1) + patch%centroid_offset(1)
             lx(2) = stl_bounding_boxes(patch%model_id, 1, 3) + patch%centroid_offset(1)
             ly(1) = stl_bounding_boxes(patch%model_id, 2, 1) + patch%centroid_offset(2)

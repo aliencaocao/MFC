@@ -3,10 +3,7 @@
 !! @brief Contains module m_weno
 #:include 'case.fpp'
 #:include 'macros.fpp'
-#! The preprocessor picks the portable module (MFC_WENO_PORTABLE, defined for AMD compilers and
-#! whenever neither MFC_FUSED_RHS nor MFC_HLLC_REGISTER_TUNING is set); the specialized module
-#! hoists loop bounds into scalars and adds the fused-kernel entry points.
-#ifdef MFC_WENO_PORTABLE
+#ifndef MFC_WENO_SPECIALIZED
 !> @brief WENO/WENO-Z/TENO reconstruction with optional monotonicity-preserving bounds and mapped weights
 module m_weno
 

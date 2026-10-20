@@ -424,6 +424,14 @@ exit 0
         )
     endif()
 
+    if (ARGS_TARGET STREQUAL "simulation" AND (MFC_FUSED_RHS OR MFC_HLLC_REGISTER_TUNING) AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang")
+        set_source_files_properties(
+            "${CMAKE_BINARY_DIR}/fypp/simulation/m_weno.fpp.f90"
+            TARGET_DIRECTORY ${IPO_TARGETS}
+            PROPERTIES COMPILE_DEFINITIONS "MFC_WENO_SPECIALIZED"
+        )
+    endif()
+
     if (MFC_REGISTER_CAPS AND ARGS_TARGET STREQUAL "simulation")
         # -gpu=maxregcount is a translation-unit option, so each entry names one solver module.
         if (NOT (MFC_OpenACC AND ARGS_OpenACC AND CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC"))

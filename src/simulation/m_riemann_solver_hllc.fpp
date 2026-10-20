@@ -7,6 +7,10 @@
 #:include 'macros.fpp'
 #:include 'chemistry_face.fpp'
 
+#:if not defined('hypoelasticity')
+    #:set hypoelasticity = False
+#:endif
+
 #! Register-tuned constant-EOS mixture closure of the 5-equation kernel
 #:set HLLC_REG_MIX = MFC_HLLC_REGISTER_TUNING and MFC_CASE_OPTIMIZATION and not any_state_dependent_eos and not bubbles_euler
 

@@ -43,9 +43,6 @@ def definitions(case):
     return [f"{name}={tuple(value) if isinstance(value, list) else value}" for name, value in sorted(values(case).items())]
 
 
-# Solver modules that MFC_REGISTER_CAPS can name. The simulation target also
-# compiles src/common's solver modules (m_eos, m_variables_conversion), so both
-# directories are valid.
 _SOURCE_DIRECTORIES = (
     Path(__file__).resolve().parents[2] / "src" / "simulation",
     Path(__file__).resolve().parents[2] / "src" / "common",
